@@ -1,6 +1,8 @@
 package sinktest_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -36,5 +38,19 @@ func TestPluginSinkPassesSuite(t *testing.T) {
 	err = outbox.PluginSink(cc).Publish(t.Context(), []outbox.Event{{ID: "big", Data: []byte(`{"n":9007199254740993}`)}})
 	if err == nil {
 		t.Fatal("a number a double cannot hold must be refused before sending")
+	}
+}
+
+func TestWebhookSinkPassesSuite(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	t.Cleanup(srv.Close)
+	for name, mode := range map[string]outbox.Mode{"batch": outbox.Batch, "single": outbox.Single} {
+		t.Run(name, func(t *testing.T) {
+			s, err := outbox.NewWebhookSink(outbox.WebhookConfig{URL: srv.URL, Mode: mode, Secret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sinktest.Run(t, s)
+		})
 	}
 }
