@@ -89,6 +89,9 @@ func Main(spec Spec, args []string, environ []string, stdout, stderr io.Writer) 
 		for _, w := range c.Weakening {
 			fmt.Fprintf(stdout, " [weakening: %s]", w)
 		}
+		for _, n := range c.Notes {
+			fmt.Fprintf(stdout, " [note: %s]", n)
+		}
 		if c.DataMigrationRequired {
 			fmt.Fprint(stdout, " [data_migration_required]")
 		}

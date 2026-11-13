@@ -55,7 +55,7 @@ func (fs Findings) Warnings() []string {
 var secretKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|credential|apikey|api_key|private)`)
 
 // Check validates a loaded desired state offline: header, every selection against the spec, plugin wiring,
-// the production guard, conformance requirements, literal secrets in config and the engine's own Spec.Validate rules.
+// the production guard, conformance requirements, literal secrets in config, extensions and Spec.Validate rules.
 func Check(spec Spec, f File) Findings {
 	var fs Findings
 	add := func(level, where, format string, args ...any) {
@@ -152,7 +152,7 @@ func Check(spec Spec, f File) Findings {
 			}
 		}
 		for _, msg := range literalSecrets("", port.Config) {
-			add(LevelError, where, "%s", msg)
+			add(LevelError, where, "config %s", msg)
 		}
 		for _, msg := range builtinConfig(ps, port) {
 			add(LevelError, where, "%s", msg)
@@ -165,6 +165,7 @@ func Check(spec Spec, f File) Findings {
 			}
 		}
 	}
+	fs = append(fs, checkExtensions(spec, f)...)
 	if spec.Validate != nil {
 		fs = append(fs, spec.Validate(f)...)
 	}
@@ -210,24 +211,28 @@ func builtinConfig(ps PortSpec, port Port) []string {
 	return out
 }
 
-func literalSecrets(path string, cfg map[string]any) []string {
+func literalSecrets(path string, v any) []string {
 	var out []string
-	for _, k := range slices.Sorted(maps.Keys(cfg)) {
-		key := strings.TrimPrefix(path+"."+k, ".")
-		switch v := cfg[k].(type) {
-		case map[string]any:
-			out = append(out, literalSecrets(key, v)...)
-		case string:
-			if embedsCredentials(v) {
-				out = append(out, fmt.Sprintf("config %s embeds credentials in a URL; use a Ref key with a reference", key))
-			}
-			isRef := strings.HasSuffix(k, "Ref")
-			if isRef && !host.IsRef(v) {
-				out = append(out, fmt.Sprintf("config %s must be a reference such as env:NAME", key))
-			}
-			if !isRef && secretKey.MatchString(k) {
-				out = append(out, fmt.Sprintf("config %s looks like a literal secret; use %sRef with a reference", key, k))
-			}
+	switch v := v.(type) {
+	case map[string]any:
+		for _, k := range slices.Sorted(maps.Keys(v)) {
+			out = append(out, literalSecrets(strings.TrimPrefix(path+"."+k, "."), v[k])...)
+		}
+	case []any:
+		for i, e := range v {
+			out = append(out, literalSecrets(fmt.Sprintf("%s[%d]", path, i), e)...)
+		}
+	case string:
+		k, _, _ := strings.Cut(path[strings.LastIndex(path, ".")+1:], "[")
+		if embedsCredentials(v) || credentialValue.MatchString(v) {
+			out = append(out, fmt.Sprintf("%s embeds credentials; use a Ref key with a reference", path))
+		}
+		isRef := strings.HasSuffix(k, "Ref")
+		if isRef && !host.IsRef(v) {
+			out = append(out, fmt.Sprintf("%s must be a reference such as env:NAME", path))
+		}
+		if !isRef && secretKey.MatchString(k) {
+			out = append(out, fmt.Sprintf("%s looks like a literal secret; use %sRef with a reference", path, k))
 		}
 	}
 	return out

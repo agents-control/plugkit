@@ -15,13 +15,15 @@ import (
 // Path is where engines serve the document.
 const Path = "/v1/adapters"
 
-// Document lists the adapters bound at boot and the opt-ins (Acknowledge) the engine was started with.
+// Document lists the adapters bound at boot, the opt-ins (Acknowledge) the engine was started with
+// and the redacted projection of each engine extension of the adapters file.
 type Document struct {
-	Engine      string   `json:"engine"`
-	Build       string   `json:"build,omitempty"`
-	Mode        string   `json:"mode,omitempty"`
-	Acknowledge []string `json:"acknowledge,omitempty"`
-	Adapters    []Row    `json:"adapters"`
+	Engine      string                     `json:"engine"`
+	Build       string                     `json:"build,omitempty"`
+	Mode        string                     `json:"mode,omitempty"`
+	Acknowledge []string                   `json:"acknowledge,omitempty"`
+	Extensions  map[string]json.RawMessage `json:"extensions,omitempty"`
+	Adapters    []Row                      `json:"adapters"`
 }
 
 // Row is one adapter serving one port; a multi-valued port has one row per provider.
