@@ -3,6 +3,7 @@ package discovery_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/agents-control/plugkit/discovery"
@@ -27,19 +28,22 @@ func TestFetchSendsAuth(t *testing.T) {
 	}
 }
 
-func TestMarkEmbedded(t *testing.T) {
+func TestReplacePortKeepsOtherProviders(t *testing.T) {
 	d := discovery.Document{Adapters: []discovery.Row{
 		{Kind: "adapter", Port: "store", Tier: "builtin", Name: "postgres", Status: "serving"},
-		{Kind: "adapter", Port: "sink", Tier: "builtin", Name: "log", Status: "serving"},
+		{Kind: "adapter", Port: "transport", Tier: "builtin", Name: "http", Status: "serving"},
 	}}
-	d.MarkEmbedded("store", "custom-kv")
-	d.MarkEmbedded("blobs", "custom-blobs")
+	d.ReplacePort("store", discovery.EmbeddedRow("store", "custom-kv"))
+	d.ReplacePort("transport", append(d.Rows("transport"), discovery.EmbeddedRow("transport", "inproc"))...)
 	if len(d.Adapters) != 3 {
 		t.Fatalf("rows = %+v", d.Adapters)
 	}
+	var uses []string
 	for _, r := range d.Adapters {
-		if r.Port == "store" && (r.Tier != discovery.TierEmbedded || r.Use() != "embedded:custom-kv" || r.Status != "serving") {
-			t.Fatalf("store row = %+v", r)
-		}
+		uses = append(uses, r.Port+" "+r.Use()+" "+r.Status)
+	}
+	want := []string{"store embedded:custom-kv serving", "transport builtin:http serving", "transport embedded:inproc serving"}
+	if strings.Join(uses, "|") != strings.Join(want, "|") {
+		t.Fatalf("rows = %v", uses)
 	}
 }

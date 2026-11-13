@@ -371,7 +371,7 @@ func TestDiffLeavesEmbeddedPortsToTheEmbedder(t *testing.T) {
 		{Port: "policy", Tier: "builtin", Name: "grants"},
 		{Port: "transport", Tier: "builtin", Name: "http"},
 	}}
-	current.MarkEmbedded("store", "custom-kv")
+	current.ReplacePort("store", discovery.EmbeddedRow("store", "custom-kv"))
 	if p := adapters.Diff(spec, load(t, ""), current); len(p.Changes) != 0 {
 		t.Fatalf("an embedded port is not plannable from the file: %+v", p)
 	}
