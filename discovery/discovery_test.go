@@ -26,3 +26,20 @@ func TestFetchSendsAuth(t *testing.T) {
 		t.Fatalf("fetch = %+v %v", d, err)
 	}
 }
+
+func TestMarkEmbedded(t *testing.T) {
+	d := discovery.Document{Adapters: []discovery.Row{
+		{Kind: "adapter", Port: "store", Tier: "builtin", Name: "postgres", Status: "serving"},
+		{Kind: "adapter", Port: "sink", Tier: "builtin", Name: "log", Status: "serving"},
+	}}
+	d.MarkEmbedded("store", "custom-kv")
+	d.MarkEmbedded("blobs", "custom-blobs")
+	if len(d.Adapters) != 3 {
+		t.Fatalf("rows = %+v", d.Adapters)
+	}
+	for _, r := range d.Adapters {
+		if r.Port == "store" && (r.Tier != discovery.TierEmbedded || r.Use() != "embedded:custom-kv" || r.Status != "serving") {
+			t.Fatalf("store row = %+v", r)
+		}
+	}
+}

@@ -37,9 +37,8 @@ type Spec struct {
 	Ports     map[string]PortSpec
 }
 
-// PortSpec says which selections a port accepts and how a change to it is judged.
-// Stateful changes need a data migration; Sensitive ports weaken when served by a plugin or by a Weak built-in.
-// BuiltinConfig lists, per "builtin:<name>", the config keys it accepts; any other key on a built-in-only port is an error.
+// PortSpec says which selections a port accepts and how a change is judged: Stateful needs a data migration, Sensitive
+// weakens on a plugin or Weak built-in; BuiltinConfig lists the config keys each "builtin:<name>" accepts, nothing else.
 type PortSpec struct {
 	Default       []string
 	Builtins      []string

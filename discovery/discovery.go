@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -44,7 +45,16 @@ type Conformance struct {
 	Passed bool   `json:"passed"`
 }
 
-// Use renders the row as an adapter selection: "memory", "builtin:<name>" or "plugin:<name>".
+// TierEmbedded marks a port served by an adapter the embedder injected in Go, outside the adapter file.
+const TierEmbedded = "embedded"
+
+// MarkEmbedded replaces every row of port with one serving embedded row named name.
+func (d *Document) MarkEmbedded(port, name string) {
+	d.Adapters = slices.DeleteFunc(d.Adapters, func(r Row) bool { return r.Port == port })
+	d.Adapters = append(d.Adapters, Row{Kind: "adapter", Port: port, Tier: TierEmbedded, Name: name, Status: "serving"})
+}
+
+// Use renders the row as an adapter selection: "memory", "builtin:<name>", "plugin:<name>" or "embedded:<name>".
 func (r Row) Use() string {
 	if r.Tier == "memory" {
 		return "memory"

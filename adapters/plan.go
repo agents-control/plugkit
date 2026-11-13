@@ -34,6 +34,7 @@ func (p Plan) DataMigrationRequired() bool {
 }
 
 // Diff compares the desired state with the document a running engine serves at GET /v1/adapters.
+// Ports the embedder serves (tier embedded) are not plannable from the file and are skipped.
 func Diff(spec Spec, desired File, current discovery.Document) Plan {
 	var p Plan
 	if current.Mode != desired.Mode {
@@ -45,7 +46,9 @@ func Diff(spec Spec, desired File, current discovery.Document) Plan {
 	}
 	running := map[string][]string{}
 	rows := map[string]discovery.Row{}
+	embedded := map[string]bool{}
 	for _, r := range current.Adapters {
+		embedded[r.Port] = embedded[r.Port] || r.Tier == discovery.TierEmbedded
 		running[r.Port] = append(running[r.Port], r.Use())
 		rows[r.Port+" "+r.Use()] = r
 	}
@@ -55,6 +58,9 @@ func Diff(spec Spec, desired File, current discovery.Document) Plan {
 	}
 	ports := slices.Sorted(maps.Keys(spec.Ports))
 	for _, name := range ports {
+		if embedded[name] {
+			continue
+		}
 		from, to := sorted(running[name]), sorted(desired.Ports[name].Use)
 		ps := spec.Ports[name]
 		if slices.Equal(from, to) {

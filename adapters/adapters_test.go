@@ -364,3 +364,15 @@ func TestPlanAgainstAuthenticatedEngine(t *testing.T) {
 		t.Fatalf("a literal token must be refused, got %d", code)
 	}
 }
+
+func TestDiffLeavesEmbeddedPortsToTheEmbedder(t *testing.T) {
+	current := discovery.Document{Engine: "example-engine", Mode: "production", Adapters: []discovery.Row{
+		{Port: "sink", Tier: "builtin", Name: "log"},
+		{Port: "policy", Tier: "builtin", Name: "grants"},
+		{Port: "transport", Tier: "builtin", Name: "http"},
+	}}
+	current.MarkEmbedded("store", "custom-kv")
+	if p := adapters.Diff(spec, load(t, ""), current); len(p.Changes) != 0 {
+		t.Fatalf("an embedded port is not plannable from the file: %+v", p)
+	}
+}
