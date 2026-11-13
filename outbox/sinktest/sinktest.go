@@ -42,7 +42,7 @@ func Cases(s outbox.Sink) []conform.Case {
 	now, run := time.Now().UTC(), rand.Text()[:12]
 	tenant := "conf-" + run
 	batch := []outbox.Event{
-		{ID: run + "-1", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, DataContentType: "application/json", Data: json.RawMessage(`{"n":1}`), Tenant: tenant, Extensions: map[string]string{"sequence": "1"}},
+		{ID: run + "-1", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, DataContentType: "application/json", Data: json.RawMessage(`{"n":1}`), Tenant: tenant, Extensions: map[string]any{"sequence": 1}},
 		{ID: run + "-2", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, Tenant: tenant, Workspace: "w"},
 		{ID: run + "-3", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, DataContentType: "application/json", Data: json.RawMessage(`[1,"two",null]`), Tenant: tenant},
 	}
