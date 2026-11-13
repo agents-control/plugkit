@@ -34,6 +34,7 @@ outbox|'"$grpc"'|plugin sink client
 conform|'"$grpc"'|suites receive guarded gRPC connections
 adapters|go.yaml.in/yaml|adapters.yaml decoding
 discovery||the discovery document is stdlib only
+usage|github.com/invopop/jsonschema|annotates the schemas engines reflect with invopop/jsonschema
 cmd|*|mains
 '
 
