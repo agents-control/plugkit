@@ -48,6 +48,8 @@ plugins:
     require: {conformance: "sha256:…", report: /etc/wf/conform/py-sink.json}
 ```
 
+Engines may declare extra sections under `extensions: {<key>: …}` (ADR-0007): schema-checked, secrets as references only, redacted in `GET /v1/adapters`, weakening changes flagged by `plan`.
+
 Each engine exposes `<engine> adapters check --file f` and `<engine> adapters plan --file f --against http://engine:8080`.
 
 ## Develop

@@ -31,12 +31,13 @@ const (
 )
 
 // Spec describes one engine's ports; the engine declares it once and every check, plan and env alias derives from it.
-// Acknowledgements names the opt-ins a file may list; Validate adds engine rules to Check, which boot runs too.
+// Acknowledgements names the opt-ins a file may list, Extensions its own sections; Validate adds engine rules to Check.
 type Spec struct {
 	Engine           string
 	EnvPrefix        string
 	Ports            map[string]PortSpec
 	Acknowledgements []string
+	Extensions       map[string]Extension
 	Validate         func(File) Findings
 }
 
@@ -77,6 +78,7 @@ type File struct {
 	Acknowledge []string        `yaml:"acknowledge"`
 	Ports       map[string]Port `yaml:"ports"`
 	Plugins     []host.Config   `yaml:"plugins"`
+	Extensions  map[string]any  `yaml:"extensions"`
 }
 
 // Port selects the adapters of one port; Config holds references, never secret values.
@@ -168,6 +170,9 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 		}
 		f.Acknowledge = got
 	}
+	if err := loadExtensions(spec, &f, env); err != nil {
+		return File{}, err
+	}
 	if f.Ports == nil {
 		f.Ports = map[string]Port{}
 	}
@@ -210,11 +215,14 @@ func sameSet(a, b []string) bool {
 func (f File) Acknowledged(name string) bool { return slices.Contains(f.Acknowledge, name) }
 
 // EnvNames lists every variable the adapters layer reads: <P>_ADAPTERS_FILE, <P>_MODE, <P>_ALLOW_MEMORY,
-// <P>_ACKNOWLEDGE, then each port's <P>_<PORT> and aliases, in port order.
+// <P>_ACKNOWLEDGE, each port's <P>_<PORT> and aliases in port order, then each <P>_EXTENSION_<KEY> in key order.
 func EnvNames(spec Spec) []string {
 	names := []string{spec.EnvPrefix + "_ADAPTERS_FILE", spec.EnvPrefix + "_MODE", spec.EnvPrefix + "_ALLOW_MEMORY", spec.EnvPrefix + "_ACKNOWLEDGE"}
 	for _, port := range slices.Sorted(maps.Keys(spec.Ports)) {
 		names = append(names, spec.portEnv(port)...)
+	}
+	for _, key := range slices.Sorted(maps.Keys(spec.Extensions)) {
+		names = append(names, spec.extensionEnv(key))
 	}
 	return names
 }

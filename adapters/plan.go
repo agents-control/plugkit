@@ -9,7 +9,7 @@ import (
 )
 
 // Change is the diff of one port between the running engine and the desired state.
-// Port "mode" carries a change of the engine mode and port "acknowledge" a change of the opt-ins.
+// Port "mode" carries the engine mode, "acknowledge" the opt-ins and "extensions.<key>" one extension's shown JSON.
 type Change struct {
 	Port                  string   `json:"port"`
 	From                  []string `json:"from"`
@@ -53,6 +53,7 @@ func Diff(spec Spec, desired File, current discovery.Document) Plan {
 		}
 		p.Changes = append(p.Changes, c)
 	}
+	p.Changes = append(p.Changes, diffExtensions(spec, desired, current)...)
 	running := map[string][]string{}
 	rows := map[string]discovery.Row{}
 	embedded := map[string]bool{}

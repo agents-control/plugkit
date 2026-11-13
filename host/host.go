@@ -383,7 +383,11 @@ func validateSettings(p *acplugv1.ProvidedPort, settings any) error {
 	if err != nil {
 		return err
 	}
-	if err := validateJSON(p.GetConfigSchema(), raw); err != nil {
+	schema, err := p.GetConfigSchema().MarshalJSON()
+	if err != nil {
+		return err
+	}
+	if err := ValidateJSON(schema, raw); err != nil {
 		return fmt.Errorf("port %q config does not match the plugin's config_schema: %w", p.GetPort(), err)
 	}
 	return nil

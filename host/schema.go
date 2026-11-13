@@ -7,15 +7,11 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/mod/semver"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
-func validateJSON(schema *structpb.Value, instance []byte) error {
-	raw, err := schema.MarshalJSON()
-	if err != nil {
-		return err
-	}
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+// ValidateJSON checks instance against a JSON Schema (draft 2020-12 by default) without loading remote references.
+func ValidateJSON(schema, instance []byte) error {
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
 	if err != nil {
 		return err
 	}
@@ -27,7 +23,7 @@ func validateJSON(schema *structpb.Value, instance []byte) error {
 	}
 	sch, err := c.Compile("mem://config.json")
 	if err != nil {
-		return fmt.Errorf("invalid config_schema: %w", err)
+		return fmt.Errorf("invalid schema: %w", err)
 	}
 	v, err := jsonschema.UnmarshalJSON(bytes.NewReader(instance))
 	if err != nil {

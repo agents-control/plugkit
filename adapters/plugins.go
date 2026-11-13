@@ -71,7 +71,7 @@ func (p *Plugins) Close() error {
 
 // Describe renders the GET /v1/adapters document of the bound state; a plugin without a verified report is degraded.
 func (p *Plugins) Describe(spec Spec, f File, build string) discovery.Document {
-	d := discovery.Document{Engine: spec.Engine, Build: build, Mode: f.Mode, Acknowledge: slices.Clone(f.Acknowledge), Adapters: []discovery.Row{}}
+	d := discovery.Document{Engine: spec.Engine, Build: build, Mode: f.Mode, Acknowledge: slices.Clone(f.Acknowledge), Extensions: describeExtensions(spec, f), Adapters: []discovery.Row{}}
 	for _, name := range slices.Sorted(maps.Keys(f.Ports)) {
 		for _, s := range f.Ports[name].Use {
 			u, err := ParseUse(s)
