@@ -3,6 +3,7 @@ package sinktest
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"testing"
 	"time"
@@ -36,12 +37,14 @@ func Run(t *testing.T, s outbox.Sink) {
 }
 
 // Cases are the sink checks: an empty batch, a whole batch and its redelivery are all accepted.
+// Ids and tenant are unique per call, so runs against a shared sink never collide.
 func Cases(s outbox.Sink) []conform.Case {
-	now := time.Now().UTC()
+	now, run := time.Now().UTC(), rand.Text()[:12]
+	tenant := "conf-" + run
 	batch := []outbox.Event{
-		{ID: "conf-1", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, DataContentType: "application/json", Data: json.RawMessage(`{"n":1}`), Tenant: "conf", Extensions: map[string]string{"sequence": "1"}},
-		{ID: "conf-2", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, Tenant: "conf", Workspace: "w"},
-		{ID: "conf-3", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, DataContentType: "application/json", Data: json.RawMessage(`[1,"two",null]`), Tenant: "conf"},
+		{ID: run + "-1", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, DataContentType: "application/json", Data: json.RawMessage(`{"n":1}`), Tenant: tenant, Extensions: map[string]string{"sequence": "1"}},
+		{ID: run + "-2", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, Tenant: tenant, Workspace: "w"},
+		{ID: run + "-3", Source: "conformance", SpecVersion: "1.0", Type: "conformance.checked", Subject: "s", Time: now, DataContentType: "application/json", Data: json.RawMessage(`[1,"two",null]`), Tenant: tenant},
 	}
 	return []conform.Case{
 		{Name: "empty batch is accepted", Run: func(ctx context.Context) error { return s.Publish(ctx, nil) }},

@@ -44,8 +44,10 @@ func Diff(spec Spec, desired File, current discovery.Document) Plan {
 		p.Changes = append(p.Changes, c)
 	}
 	running := map[string][]string{}
+	rows := map[string]discovery.Row{}
 	for _, r := range current.Adapters {
 		running[r.Port] = append(running[r.Port], r.Use())
+		rows[r.Port+" "+r.Use()] = r
 	}
 	plugins := map[string]host.Config{}
 	for _, pl := range desired.Plugins {
@@ -54,10 +56,17 @@ func Diff(spec Spec, desired File, current discovery.Document) Plan {
 	ports := slices.Sorted(maps.Keys(spec.Ports))
 	for _, name := range ports {
 		from, to := sorted(running[name]), sorted(desired.Ports[name].Use)
+		ps := spec.Ports[name]
 		if slices.Equal(from, to) {
+			var w []string
+			for _, s := range to {
+				w = append(w, configWeakens(rows[name+" "+s], plugins, s)...)
+			}
+			if len(w) > 0 {
+				p.Changes = append(p.Changes, Change{Port: name, From: from, To: to, Weakening: w})
+			}
 			continue
 		}
-		ps := spec.Ports[name]
 		c := Change{Port: name, From: from, To: to, DataMigrationRequired: ps.Stateful && len(from) > 0}
 		for _, s := range to {
 			c.Weakening = append(c.Weakening, weakens(desired, ps, plugins, s)...)
@@ -86,6 +95,22 @@ func weakens(f File, ps PortSpec, plugins map[string]host.Config, s string) []st
 		if p.Require.Conformance == "" {
 			out = append(out, "no conformance report for "+s)
 		}
+	}
+	return out
+}
+
+func configWeakens(running discovery.Row, plugins map[string]host.Config, s string) []string {
+	u, err := ParseUse(s)
+	p, ok := plugins[u.Name]
+	if err != nil || !ok || u.Tier != TierPlugin {
+		return nil
+	}
+	var out []string
+	if p.Plaintext() && !running.Plaintext {
+		out = append(out, "plaintext transport to "+s)
+	}
+	if p.Require.Conformance == "" && running.Conformance != nil {
+		out = append(out, "conformance report dropped for "+s)
 	}
 	return out
 }

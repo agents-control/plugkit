@@ -33,6 +33,7 @@ type Row struct {
 	ManifestDigest string       `json:"manifestDigest,omitempty"`
 	Capabilities   []string     `json:"capabilities,omitempty"`
 	Status         string       `json:"status"`
+	Plaintext      bool         `json:"plaintext,omitempty"`
 	Conformance    *Conformance `json:"conformance,omitempty"`
 }
 

@@ -88,7 +88,10 @@ func Check(spec Spec, f File) Findings {
 		case p.Require.Conformance == "":
 			add(LevelWarning, where, "no conformance report required")
 		}
-		if p.Plaintext() {
+		switch {
+		case p.Plaintext() && p.CredentialRef != "" && prod:
+			add(LevelError, where, "bearer token over plaintext to a non-loopback endpoint")
+		case p.Plaintext():
 			add(LevelWarning, where, "plaintext transport to a non-loopback endpoint")
 		}
 		if len(p.Ports) == 0 {

@@ -116,7 +116,7 @@ func TestCheckFindings(t *testing.T) {
 		want string
 	}{
 		"memory in production": {yaml: "ports: {store: {use: memory}}", want: "memory is refused"},
-		"memory allowed":       {yaml: "ports: {store: {use: memory}}", env: []string{"EX_ALLOW_MEMORY=true"}},
+		"memory allowed":       {yaml: "allowMemory: true\nports: {store: {use: memory}}"},
 		"no memory adapter":    {yaml: "mode: dev\nports: {policy: {use: memory}}", want: "no memory adapter"},
 		"unknown builtin":      {yaml: "ports: {sink: {use: builtin:kafka}}", want: "unknown built-in"},
 		"unknown port":         {yaml: "ports: {cache: {use: memory}}", want: "unknown port"},
@@ -263,5 +263,42 @@ func TestMainCheckAndPlan(t *testing.T) {
 	}
 	if code := adapters.Main(spec, []string{"check"}, []string{"EX_STORE=memory"}, &out, &errOut); code != 1 {
 		t.Fatalf("memory in production must fail the check, got %d", code)
+	}
+}
+
+func TestDiffFlagsPluginConfigOnlyChange(t *testing.T) {
+	current := discovery.Document{Engine: "example-engine", Mode: "production", Adapters: []discovery.Row{
+		{Port: "sink", Tier: "plugin", Name: "p", Conformance: &discovery.Conformance{Report: "sha256:abc", Passed: true}},
+	}}
+	desired := load(t, "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: production\nports:\n  store: {use: builtin:postgres}\n  sink: {use: plugin:p}\n  policy: {use: builtin:grants}\n  transport: {use: builtin:http}\nplugins: [{name: p, endpoint: '10.0.0.9:1', tls: {insecure: true}}]")
+	current.Adapters = append(current.Adapters,
+		discovery.Row{Port: "store", Tier: "builtin", Name: "postgres"},
+		discovery.Row{Port: "policy", Tier: "builtin", Name: "grants"},
+		discovery.Row{Port: "transport", Tier: "builtin", Name: "http"})
+	p := adapters.Diff(spec, desired, current)
+	if len(p.Changes) != 1 || p.Changes[0].Port != "sink" || len(p.Changes[0].Weakening) != 2 || !p.Weakening() {
+		t.Fatalf("plan = %+v", p)
+	}
+}
+
+func TestPlaintextBearerRefusedInProduction(t *testing.T) {
+	doc := func(mode string) adapters.File {
+		return load(t, "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: "+mode+"\nports: {sink: {use: plugin:p}}\nplugins: [{name: p, endpoint: '10.0.0.9:1', tls: {insecure: true}, credentialRef: env:T, require: {conformance: 'sha256:a', report: /r.json}}]")
+	}
+	if err := adapters.Check(spec, doc("production")).Err(); err == nil || !strings.Contains(err.Error(), "bearer") {
+		t.Fatalf("production err = %v", err)
+	}
+	if fs := adapters.Check(spec, doc("dev")); fs.Err() != nil || len(fs.Warnings()) == 0 {
+		t.Fatalf("dev findings = %v", fs)
+	}
+}
+
+func TestAllowMemoryEnvConflictsWithFile(t *testing.T) {
+	file := []byte("apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: production\nallowMemory: false\n")
+	if _, err := adapters.Load(spec, file, []string{"EX_ALLOW_MEMORY=true"}); err == nil {
+		t.Fatal("env must not override allowMemory of the file")
+	}
+	if f, err := adapters.Load(spec, nil, []string{"EX_ALLOW_MEMORY=true"}); err != nil || !f.AllowMemory {
+		t.Fatalf("env form = %+v %v", f, err)
 	}
 }

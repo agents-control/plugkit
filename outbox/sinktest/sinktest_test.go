@@ -29,8 +29,9 @@ func TestPluginSinkPassesSuite(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 	cc, _ := c.Port("sink")
 	sinktest.Run(t, outbox.PluginSink(cc))
-	if ids := sink.IDs(); len(ids) != 3 {
-		t.Fatalf("stored %v, want each event once", ids)
+	sinktest.Run(t, outbox.PluginSink(cc))
+	if ids := sink.IDs(); len(ids) != 6 {
+		t.Fatalf("stored %v, want each run's events once and runs not colliding", ids)
 	}
 	err = outbox.PluginSink(cc).Publish(t.Context(), []outbox.Event{{ID: "big", Data: []byte(`{"n":9007199254740993}`)}})
 	if err == nil {

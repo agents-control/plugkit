@@ -83,7 +83,7 @@ func (p *Plugins) Describe(spec Spec, f File, build string) discovery.Document {
 				pin, st := c.Pin(), c.Status()
 				row.Version, row.Protocol, row.ManifestDigest = pin.Version, pin.Protocol, pin.Digest
 				row.Capabilities, row.Status = c.Capabilities(name), st.State
-				row.Conformance = p.conformance[u.Name]
+				row.Conformance, row.Plaintext = p.conformance[u.Name], c.Config().Plaintext()
 				if st.State == host.StateServing && (row.Conformance == nil || !row.Conformance.Passed) {
 					row.Status = host.StateDegraded
 				}

@@ -136,8 +136,11 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 		}
 		f.Mode = mode
 	}
-	if env[spec.EnvPrefix+"_ALLOW_MEMORY"] == "true" {
-		f.AllowMemory = true
+	if allow, ok := env[spec.EnvPrefix+"_ALLOW_MEMORY"]; ok {
+		if data != nil && (allow == "true") != f.AllowMemory {
+			return File{}, fmt.Errorf("%s_ALLOW_MEMORY=%s contradicts allowMemory of the adapters file", spec.EnvPrefix, allow)
+		}
+		f.AllowMemory = allow == "true"
 	}
 	if f.Ports == nil {
 		f.Ports = map[string]Port{}
