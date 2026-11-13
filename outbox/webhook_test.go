@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -22,19 +23,20 @@ const (
 )
 
 func TestParseKey(t *testing.T) {
-	raw24 := strings.Repeat("k", 24)
 	for name, tc := range map[string]struct {
 		secret  string
 		wantLen int
 		bad     bool
 	}{
-		"spec secret decodes":     {specSecret, 24, false},
-		"raw secret is its bytes": {raw24, 24, false},
-		"malformed base64 fails":  {"whsec_!!!notbase64", 0, true},
-		"short decoded fails":     {"whsec_YWJj", 0, true},
-		"short raw fails":         {"short", 0, true},
-		"too long fails":          {strings.Repeat("k", 65), 0, true},
-		"empty fails":             {"", 0, true},
+		"spec secret decodes":    {specSecret, 24, false},
+		"raw 32 is its bytes":    {strings.Repeat("k", 32), 32, false},
+		"raw has no cap":         {strings.Repeat("k", 200), 200, false},
+		"raw 24 fails":           {strings.Repeat("k", 24), 0, true},
+		"malformed base64 fails": {"whsec_!!!notbase64", 0, true},
+		"short decoded fails":    {"whsec_YWJj", 0, true},
+		"short raw fails":        {"short", 0, true},
+		"decoded too long fails": {"whsec_" + base64.StdEncoding.EncodeToString(make([]byte, 65)), 0, true},
+		"empty fails":            {"", 0, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			key, err := ParseKey(tc.secret)
@@ -105,7 +107,7 @@ func receiver(t *testing.T, status func(n int) int) (*httptest.Server, func() []
 func events(n int) []Event {
 	out := make([]Event, n)
 	for i := range out {
-		out[i] = Event{ID: "e" + string(rune('1'+i)), Source: "s", SpecVersion: "1.0", Type: "t", Time: time.Unix(1, 0), Tenant: "acme", Extensions: map[string]string{"sequence": "7"}}
+		out[i] = Event{ID: "e" + string(rune('1'+i)), Source: "s", SpecVersion: "1.0", Type: "t", Time: time.Unix(1, 0), Tenant: "acme", Extensions: map[string]any{"sequence": 7}}
 	}
 	return out
 }
@@ -135,7 +137,7 @@ func TestBatchPost(t *testing.T) {
 		t.Fatal(err)
 	}
 	var body []map[string]any
-	if err := json.Unmarshal(p[0].body, &body); err != nil || len(body) != 2 || body[0]["sequence"] != "7" || body[0]["tenant"] != "acme" {
+	if err := json.Unmarshal(p[0].body, &body); err != nil || len(body) != 2 || body[0]["sequence"] != float64(7) || body[0]["tenant"] != "acme" {
 		t.Fatalf("body %s err %v", p[0].body, err)
 	}
 }
@@ -204,5 +206,64 @@ func TestEventExtensionsNeverShadowCoreAttributes(t *testing.T) {
 	_ = json.Unmarshal(b, &m)
 	if m["id"] != "e1" || m["data"] != nil {
 		t.Fatalf("%s", b)
+	}
+}
+
+func TestVerifyRefusesWeakInputs(t *testing.T) {
+	h := http.Header{"Webhook-Id": {specID}, "Webhook-Timestamp": {specTS}, "Webhook-Signature": {specSig}}
+	now := time.Unix(1614265330, 0)
+	if err := Verify(nil, h, []byte(specBody), now, time.Minute); !errors.Is(err, ErrBadKey) {
+		t.Fatalf("empty key: %v", err)
+	}
+	if err := Verify(make([]byte, 23), h, []byte(specBody), now, time.Minute); !errors.Is(err, ErrBadKey) {
+		t.Fatalf("short key: %v", err)
+	}
+	key, _ := ParseKey(specSecret)
+	if err := Verify(key, h, []byte(specBody), now, -time.Minute); !errors.Is(err, ErrBadTolerance) {
+		t.Fatalf("negative tolerance: %v", err)
+	}
+}
+
+func TestBatchIDGolden(t *testing.T) {
+	if got := batchID(events(2)); got != "msg_afd690b15b4e78be8eedf3eac5829d47" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestBatchFailureAcceptsNone(t *testing.T) {
+	srv, _ := receiver(t, func(int) int { return 500 })
+	s, _ := NewWebhookSink(WebhookConfig{URL: srv.URL})
+	if n, err := s.Deliver(t.Context(), events(3)); n != 0 || err == nil {
+		t.Fatalf("n %d err %v", n, err)
+	}
+}
+
+func TestCallerClientIsNotModified(t *testing.T) {
+	c := &http.Client{Timeout: time.Second}
+	if _, err := NewWebhookSink(WebhookConfig{URL: "http://h/x", Client: c}); err != nil {
+		t.Fatal(err)
+	}
+	if c.CheckRedirect != nil {
+		t.Fatal("the caller's client was changed")
+	}
+}
+
+func TestEventJSONRoundTripKeepsTypes(t *testing.T) {
+	in := events(1)[0]
+	in.Data = json.RawMessage(`{"n":1}`)
+	in.Extensions = map[string]any{"sequence": 9007199254740993, "flag": true, "name": "x", "id": "evil"}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Event
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != "e1" || string(out.Data) != `{"n":1}` || !out.Time.Equal(in.Time) || out.Tenant != "acme" {
+		t.Fatalf("core lost: %+v", out)
+	}
+	if out.Extensions["sequence"] != json.Number("9007199254740993") || out.Extensions["flag"] != true || out.Extensions["name"] != "x" || len(out.Extensions) != 3 {
+		t.Fatalf("extensions %v", out.Extensions)
 	}
 }

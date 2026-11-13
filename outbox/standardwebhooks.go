@@ -16,6 +16,7 @@ const (
 	secretPrefix = "whsec_"
 	minKeyBytes  = 24
 	maxKeyBytes  = 64
+	minRawBytes  = 32
 )
 
 var (
@@ -27,20 +28,26 @@ var (
 	ErrStaleTimestamp = errors.New("outbox: webhook timestamp outside tolerance")
 	// ErrBadSignature marks a delivery no v1 signature of which matches the key.
 	ErrBadSignature = errors.New("outbox: webhook signature mismatch")
+	// ErrBadTolerance marks a Verify call with a non-positive tolerance.
+	ErrBadTolerance = errors.New("outbox: webhook tolerance must be positive")
 )
 
-// ParseKey returns the signing key of a secret: standard base64 after "whsec_" is decoded, anything else is its raw bytes.
-// The key must be 24 to 64 bytes; a malformed secret fails, it never falls back to raw.
+// ParseKey decodes a "whsec_" secret (24 to 64 bytes) or takes a raw one (at least 32, no cap); malformed input fails.
+// It never falls back to raw, and engines may enforce a stricter policy on top.
 func ParseKey(secret string) ([]byte, error) {
-	key := []byte(secret)
-	if b64, ok := strings.CutPrefix(secret, secretPrefix); ok {
-		var err error
-		if key, err = base64.StdEncoding.DecodeString(b64); err != nil {
-			return nil, fmt.Errorf("%w: a whsec_ secret must hold standard base64", ErrBadKey)
+	b64, prefixed := strings.CutPrefix(secret, secretPrefix)
+	if !prefixed {
+		if len(secret) < minRawBytes {
+			return nil, fmt.Errorf("%w: a raw secret must be at least %d bytes", ErrBadKey, minRawBytes)
 		}
+		return []byte(secret), nil
+	}
+	key, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, fmt.Errorf("%w: a whsec_ secret must hold standard base64", ErrBadKey)
 	}
 	if len(key) < minKeyBytes || len(key) > maxKeyBytes {
-		return nil, fmt.Errorf("%w: the key must be %d to %d bytes", ErrBadKey, minKeyBytes, maxKeyBytes)
+		return nil, fmt.Errorf("%w: a whsec_ key must decode to %d to %d bytes", ErrBadKey, minKeyBytes, maxKeyBytes)
 	}
 	return key, nil
 }
@@ -57,9 +64,15 @@ func Sign(key []byte, id, timestamp string, body []byte) string {
 	return "v1," + base64.StdEncoding.EncodeToString(mac(key, id, timestamp, body))
 }
 
-// Verify checks a received delivery in constant time: headers present, timestamp within tolerance of now, and one of
-// the space-separated v1 signatures matches. Callers holding several keys try each.
+// Verify checks headers, timestamp within tolerance (> 0) and a matching v1 signature in constant time; the key is >= 24 bytes.
+// The caller bounds the body, only each header's first value counts, and callers with several keys try each.
 func Verify(key []byte, h http.Header, body []byte, now time.Time, tolerance time.Duration) error {
+	if len(key) < minKeyBytes {
+		return ErrBadKey
+	}
+	if tolerance <= 0 {
+		return ErrBadTolerance
+	}
 	id, ts, sigs := h.Get("webhook-id"), h.Get("webhook-timestamp"), h.Get("webhook-signature")
 	if id == "" || ts == "" || sigs == "" {
 		return ErrMissingHeaders

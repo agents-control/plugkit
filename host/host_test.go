@@ -503,14 +503,16 @@ func TestStreamIdleDisabled(t *testing.T) {
 	addr := silentStreamServer(t, nil)
 	c := dial(t, &host.Host{DefaultStreamIdle: 50 * time.Millisecond, StreamIdle: map[string]time.Duration{"watch": -1}}, plain(addr))
 	cc, _ := c.Port("watch")
-	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	s, err := openWatch(ctx, cc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecvMsg(&acplugv1.HealthResponse{}); status.Code(err) != codes.DeadlineExceeded || ctx.Err() == nil {
-		t.Fatalf("a disabled idle timeout must leave the stream to the caller's context, got %v", err)
+	start := time.Now()
+	time.AfterFunc(400*time.Millisecond, cancel)
+	if err := s.RecvMsg(&acplugv1.HealthResponse{}); status.Code(err) != codes.Canceled || time.Since(start) < 350*time.Millisecond {
+		t.Fatalf("a disabled idle timeout must leave the stream to the caller's context, got %v after %v", err, time.Since(start))
 	}
 }
 

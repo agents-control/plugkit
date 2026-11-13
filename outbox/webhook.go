@@ -11,9 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -86,8 +84,8 @@ func (s *WebhookSink) Publish(ctx context.Context, events []Event) error {
 	return err
 }
 
-// Deliver posts events and returns how many leading ones were accepted, with the error that stopped the next one.
-// Batch mode accepts all or none; webhook-id is the event id (Single) or a hash of the ids (Batch), so retries repeat it.
+// Deliver returns how many leading events were accepted and the error that stopped the next; Batch is all or none.
+// webhook-id is the event id (Single) or the artifact-engine hash of the ids (Batch); workflow-engine's differs, so it changes on adoption.
 func (s *WebhookSink) Deliver(ctx context.Context, events []Event) (int, error) {
 	if len(events) == 0 {
 		return 0, nil
@@ -123,7 +121,7 @@ func (s *WebhookSink) post(ctx context.Context, id, contentType string, payload 
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(body))
 	if err != nil {
-		return errors.New("build request")
+		return fmt.Errorf("build request: %w", err)
 	}
 	ts := strconv.FormatInt(s.now().Unix(), 10)
 	req.Header.Set("Content-Type", contentType)
@@ -133,7 +131,7 @@ func (s *WebhookSink) post(ctx context.Context, id, contentType string, payload 
 		req.Header.Set("webhook-signature", Sign(s.key, id, ts, body))
 	}
 	for _, e := range carried {
-		if tp := e.Extensions["traceparent"]; tp != "" {
+		if tp, _ := e.Extensions["traceparent"].(string); tp != "" {
 			req.Header.Set("traceparent", tp)
 			break
 		}
@@ -152,25 +150,4 @@ func (s *WebhookSink) post(ctx context.Context, id, contentType string, payload 
 		return &StatusError{Code: res.StatusCode}
 	}
 	return nil
-}
-
-var reservedAttributes = strings.Fields("id source specversion type subject time datacontenttype dataschema data tenant workspace")
-
-// MarshalJSON encodes the event as CloudEvents JSON: Extensions become top-level attributes and never shadow a core one.
-func (e Event) MarshalJSON() ([]byte, error) {
-	m := map[string]any{"id": e.ID, "source": e.Source, "specversion": e.SpecVersion, "type": e.Type, "time": e.Time.UTC().Format(time.RFC3339Nano)}
-	for k, v := range map[string]string{"subject": e.Subject, "datacontenttype": e.DataContentType, "dataschema": e.DataSchema, "tenant": e.Tenant, "workspace": e.Workspace} {
-		if v != "" {
-			m[k] = v
-		}
-	}
-	if len(e.Data) > 0 {
-		m["data"] = e.Data
-	}
-	for k, v := range e.Extensions {
-		if !slices.Contains(reservedAttributes, k) {
-			m[k] = v
-		}
-	}
-	return json.Marshal(m)
 }
