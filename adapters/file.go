@@ -31,10 +31,13 @@ const (
 )
 
 // Spec describes one engine's ports; the engine declares it once and every check, plan and env alias derives from it.
+// Acknowledgements names the opt-ins a file may list; Validate adds engine rules to Check, which boot runs too.
 type Spec struct {
-	Engine    string
-	EnvPrefix string
-	Ports     map[string]PortSpec
+	Engine           string
+	EnvPrefix        string
+	Ports            map[string]PortSpec
+	Acknowledgements []string
+	Validate         func(File) Findings
 }
 
 // PortSpec says which selections a port accepts and how a change is judged: Stateful needs a data migration, Sensitive
@@ -71,6 +74,7 @@ type File struct {
 	Engine      string          `yaml:"engine"`
 	Mode        string          `yaml:"mode"`
 	AllowMemory bool            `yaml:"allowMemory"`
+	Acknowledge []string        `yaml:"acknowledge"`
 	Ports       map[string]Port `yaml:"ports"`
 	Plugins     []host.Config   `yaml:"plugins"`
 }
@@ -154,6 +158,13 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 		}
 		f.AllowMemory = allow == "true"
 	}
+	if ack, ok := env[spec.EnvPrefix+"_ACKNOWLEDGE"]; ok {
+		got := strings.Split(ack, ",")
+		if data != nil && !sameSet(got, f.Acknowledge) {
+			return File{}, fmt.Errorf("%s_ACKNOWLEDGE=%s contradicts acknowledge of the adapters file", spec.EnvPrefix, ack)
+		}
+		f.Acknowledge = got
+	}
 	if f.Ports == nil {
 		f.Ports = map[string]Port{}
 	}
@@ -177,10 +188,18 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 	return f, nil
 }
 
+func sameSet(a, b []string) bool {
+	a, b = slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b))
+	return slices.Equal(slices.Compact(a), slices.Compact(b))
+}
+
+// Acknowledged reports whether the file or <P>_ACKNOWLEDGE lists the opt-in name.
+func (f File) Acknowledged(name string) bool { return slices.Contains(f.Acknowledge, name) }
+
 // EnvNames lists every variable the adapters layer reads: <P>_ADAPTERS_FILE, <P>_MODE, <P>_ALLOW_MEMORY,
-// then each port's <P>_<PORT> and aliases, in port order.
+// <P>_ACKNOWLEDGE, then each port's <P>_<PORT> and aliases, in port order.
 func EnvNames(spec Spec) []string {
-	names := []string{spec.EnvPrefix + "_ADAPTERS_FILE", spec.EnvPrefix + "_MODE", spec.EnvPrefix + "_ALLOW_MEMORY"}
+	names := []string{spec.EnvPrefix + "_ADAPTERS_FILE", spec.EnvPrefix + "_MODE", spec.EnvPrefix + "_ALLOW_MEMORY", spec.EnvPrefix + "_ACKNOWLEDGE"}
 	for _, port := range slices.Sorted(maps.Keys(spec.Ports)) {
 		names = append(names, spec.portEnv(port)...)
 	}

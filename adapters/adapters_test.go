@@ -390,3 +390,59 @@ func TestPlanRefusesCredentialsOverPlaintext(t *testing.T) {
 		}
 	}
 }
+
+func TestSpecValidateRunsInCheckAndCLI(t *testing.T) {
+	s := spec
+	s.Validate = func(f adapters.File) adapters.Findings {
+		if u, ok := f.First("store"); ok && u.Tier == adapters.TierPlugin {
+			return adapters.Findings{{Level: adapters.LevelError, Where: "port store", Message: "partial store plugin refused"}}
+		}
+		return nil
+	}
+	file := "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: dev\nports:\n  store: {use: plugin:p}\nplugins:\n  - {name: p, endpoint: 127.0.0.1:1, tls: {insecure: true}}\n"
+	f, err := adapters.Load(s, []byte(file), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapters.Check(s, f).Err(); err == nil || !strings.Contains(err.Error(), "partial store plugin refused") {
+		t.Fatalf("Check err = %v", err)
+	}
+	if err := adapters.Check(spec, f).Err(); err != nil {
+		t.Fatalf("without the callback: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "a.yaml")
+	_ = os.WriteFile(path, []byte(file), 0o600)
+	var out, errb bytes.Buffer
+	if code := adapters.Main(s, []string{"check", "--file", path}, nil, &out, &errb); code != 1 || !strings.Contains(out.String(), "partial store plugin refused") {
+		t.Fatalf("adapters check code=%d out=%s", code, out.String())
+	}
+}
+
+func TestAcknowledgements(t *testing.T) {
+	s := spec
+	s.Acknowledgements = []string{"partial_store_plugin"}
+	head := "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: production\n"
+	f, err := adapters.Load(s, []byte(head+"acknowledge: [partial_store_plugin]\n"), nil)
+	if err != nil || !f.Acknowledged("partial_store_plugin") || f.Acknowledged("other") || adapters.Check(s, f).Err() != nil {
+		t.Fatalf("file form: %+v %v", f, err)
+	}
+	f, err = adapters.Load(s, []byte(head+"acknowledge: [typo]\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapters.Check(s, f).Err(); err == nil || !strings.Contains(err.Error(), `unknown acknowledgement "typo"`) {
+		t.Fatalf("unknown acknowledgement: %v", err)
+	}
+	if f, err = adapters.Load(s, nil, []string{"EX_ACKNOWLEDGE=partial_store_plugin"}); err != nil || !f.Acknowledged("partial_store_plugin") {
+		t.Fatalf("env form: %+v %v", f, err)
+	}
+	if _, err = adapters.Load(s, []byte(head+"acknowledge: [partial_store_plugin]\n"), []string{"EX_ACKNOWLEDGE=partial_store_plugin"}); err != nil {
+		t.Fatalf("agreeing env and file: %v", err)
+	}
+	if _, err = adapters.Load(s, []byte(head), []string{"EX_ACKNOWLEDGE=partial_store_plugin"}); err == nil {
+		t.Fatal("env must not add an acknowledgement the file lacks")
+	}
+	if !slices.Contains(adapters.EnvNames(s), "EX_ACKNOWLEDGE") {
+		t.Fatal("EnvNames lacks EX_ACKNOWLEDGE")
+	}
+}

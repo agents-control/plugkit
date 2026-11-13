@@ -113,7 +113,7 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 	c.pin = Pin{Name: m.GetName(), Version: m.GetVersion(), Protocol: m.GetProtocol(), Digest: Digest(m)}
 	c.ports = map[string]*enabledPort{}
 	for _, p := range m.GetPorts() {
-		if len(c.cfg.Ports) > 0 && !slices.Contains(c.cfg.Ports, p.GetPort()) {
+		if !h.enables(c.cfg, p) {
 			continue
 		}
 		if err := validateSettings(p, c.cfg.Settings[p.GetPort()]); err != nil {
@@ -132,7 +132,11 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 }
 
 func (h *Host) manifest(ctx context.Context, c *Client) (*acplugv1.ManifestResponse, error) {
-	c.request = &acplugv1.ManifestRequest{HostProtocols: h.protocols(), HostEngine: h.Engine, HostVersion: h.Version}
+	portConfig, err := portConfig(c.cfg)
+	if err != nil {
+		return nil, err
+	}
+	c.request = &acplugv1.ManifestRequest{HostProtocols: h.protocols(), HostEngine: h.Engine, HostVersion: h.Version, PortConfig: portConfig}
 	m, err := acplugv1.NewPluginClient(c.conn).Manifest(ctx, c.request)
 	if status.Code(err) != codes.Unimplemented {
 		if err != nil {
@@ -157,11 +161,24 @@ func (h *Host) manifest(ctx context.Context, c *Client) (*acplugv1.ManifestRespo
 	return nil, fmt.Errorf("manifest: %w", err)
 }
 
-func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
-	accepted := h.protocols()
+func (h *Host) accepted() []string {
+	out := h.protocols()
 	for _, l := range h.Legacy {
-		accepted = append(accepted, l.Protocol)
+		out = append(out, l.Protocol)
 	}
+	return out
+}
+
+func (h *Host) speaks(p *acplugv1.ProvidedPort) bool {
+	return len(p.GetProtocols()) == 0 || slices.ContainsFunc(p.GetProtocols(), func(id string) bool { return slices.Contains(h.accepted(), id) })
+}
+
+func (h *Host) enables(cfg Config, p *acplugv1.ProvidedPort) bool {
+	return h.speaks(p) && (len(cfg.Ports) == 0 || slices.Contains(cfg.Ports, p.GetPort()))
+}
+
+func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
+	accepted := h.accepted()
 	if !slices.Contains(accepted, m.GetProtocol()) {
 		return fmt.Errorf("plugin speaks %q, host speaks %s", m.GetProtocol(), strings.Join(accepted, ", "))
 	}
@@ -185,6 +202,9 @@ func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
 		}
 		if !isSchema(p.GetConfigSchema()) {
 			return fmt.Errorf("port %q declares no config_schema (a JSON Schema object or boolean)", p.GetPort())
+		}
+		if !h.speaks(p) {
+			continue
 		}
 		declared[p.GetPort()] = true
 	}
@@ -314,13 +334,39 @@ func isSchema(v *structpb.Value) bool {
 	return false
 }
 
-func validateSettings(p *acplugv1.ProvidedPort, settings any) error {
+func settingsJSON(port string, settings any) ([]byte, error) {
 	if settings == nil {
 		settings = map[string]any{}
 	}
 	raw, err := json.Marshal(settings)
 	if err != nil {
-		return fmt.Errorf("port %q config: %w", p.GetPort(), err)
+		return nil, fmt.Errorf("port %q config: %w", port, err)
+	}
+	return raw, nil
+}
+
+// portConfig delivers the object configs; other shapes are left to config_schema to refuse.
+func portConfig(cfg Config) (map[string]*structpb.Struct, error) {
+	out := map[string]*structpb.Struct{}
+	for port, settings := range cfg.Settings {
+		if len(cfg.Ports) > 0 && !slices.Contains(cfg.Ports, port) {
+			continue
+		}
+		raw, err := settingsJSON(port, settings)
+		if err != nil {
+			return nil, err
+		}
+		if st := (&structpb.Struct{}); st.UnmarshalJSON(raw) == nil {
+			out[port] = st
+		}
+	}
+	return out, nil
+}
+
+func validateSettings(p *acplugv1.ProvidedPort, settings any) error {
+	raw, err := settingsJSON(p.GetPort(), settings)
+	if err != nil {
+		return err
 	}
 	if err := validateJSON(p.GetConfigSchema(), raw); err != nil {
 		return fmt.Errorf("port %q config does not match the plugin's config_schema: %w", p.GetPort(), err)

@@ -541,3 +541,43 @@ func TestStreamsNeverConsumeUnarySlots(t *testing.T) {
 		t.Fatalf("unary call while streams are open: %v", err)
 	}
 }
+
+func TestHandshakeDeliversPortConfig(t *testing.T) {
+	p := &recordingPlugin{Plugin: serve.NewPlugin(serve.SinkManifest("ref"))}
+	cfg := plain(start(t, p, &serve.MemorySink{}))
+	cfg.Settings = map[string]any{"sink": map[string]any{"stage": "a", "n": 2}, "other": map[string]any{"x": 1}}
+	cfg.Ports = []string{"sink"}
+	dial(t, &host.Host{}, cfg)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	got := p.last.GetPortConfig()
+	if len(got) != 1 || got["sink"].AsMap()["stage"] != "a" || got["sink"].AsMap()["n"] != float64(2) {
+		t.Fatalf("port_config = %v", got)
+	}
+}
+
+func TestPortProtocolsGateEnablement(t *testing.T) {
+	m := serve.Manifest(host.ProtocolID, "multi", "1.0.0", serve.Port("sink", "batch"), serve.Port("second"))
+	m.Ports[0].Protocols = []string{"acplug/1+other/1", "acplug/1+mtplugin/1"}
+	addr := start(t, serve.NewPlugin(m), &serve.MemorySink{})
+	if c := dial(t, &host.Host{}, plain(addr)); len(c.Ports()) != 1 || c.Ports()[0] != "second" {
+		t.Fatalf("ports without the protocol = %v", c.Ports())
+	}
+	cfg := plain(addr)
+	cfg.Ports = []string{"sink"}
+	if _, err := (&host.Host{}).Dial(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "not provided") {
+		t.Fatalf("configured port with a foreign protocol: %v", err)
+	}
+	for _, id := range []string{"acplug/1+other/1", "acplug/1+mtplugin/1"} {
+		if c := dial(t, &host.Host{Protocols: []string{host.ProtocolID, id}}, plain(addr)); len(c.Ports()) != 2 {
+			t.Fatalf("host speaking %s enables %v", id, c.Ports())
+		}
+	}
+}
+
+func TestServeManifestBuildsPorts(t *testing.T) {
+	m := serve.Manifest("acplug/1+x/1", "n", "2.0.0", serve.Port("a", "c1"), serve.Port("b"))
+	if m.GetProtocol() != "acplug/1+x/1" || m.GetVersion() != "2.0.0" || len(m.GetPorts()) != 2 || m.GetPorts()[0].GetCapabilities()[0] != "c1" || m.GetPorts()[1].GetConfigSchema() == nil {
+		t.Fatalf("manifest = %v", m)
+	}
+}

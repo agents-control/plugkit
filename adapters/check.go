@@ -54,7 +54,7 @@ func (fs Findings) Warnings() []string {
 var secretKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|credential|apikey|api_key|private)`)
 
 // Check validates a loaded desired state offline: header, every selection against the spec, plugin wiring,
-// the production guard, conformance requirements and literal secrets in config.
+// the production guard, conformance requirements, literal secrets in config and the engine's own Spec.Validate rules.
 func Check(spec Spec, f File) Findings {
 	var fs Findings
 	add := func(level, where, format string, args ...any) {
@@ -70,6 +70,11 @@ func Check(spec Spec, f File) Findings {
 		add(LevelError, "mode", "mode must be production or dev, got %q", f.Mode)
 	}
 	prod := f.Mode == ModeProduction
+	for _, a := range f.Acknowledge {
+		if !slices.Contains(spec.Acknowledgements, a) {
+			add(LevelError, "acknowledge", "unknown acknowledgement %q; %s accepts %s", a, spec.Engine, strings.Join(spec.Acknowledgements, ", "))
+		}
+	}
 	plugins := map[string]host.Config{}
 	for _, p := range f.Plugins {
 		where := "plugin " + p.Name
@@ -158,6 +163,9 @@ func Check(spec Spec, f File) Findings {
 				add(LevelError, "plugin "+p.Name, "lists unknown port %q", name)
 			}
 		}
+	}
+	if spec.Validate != nil {
+		fs = append(fs, spec.Validate(f)...)
 	}
 	return fs
 }

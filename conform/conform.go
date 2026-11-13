@@ -21,32 +21,46 @@ import (
 // ReportFormat identifies the report schema.
 const ReportFormat = "acplug.conform/1"
 
-const (
-	caseTimeout   = 30 * time.Second
-	latencySample = 20
-)
+const latencySample = 20
 
-// Case is one observable check; Run returns nil when the plugin behaves as the port requires.
+// Case is one observable check; Run returns nil when the plugin behaves as the port requires and Skip(reason) when
+// it cannot apply. A skipped case fails the report unless Optional; Timeout, when set, narrows the runner's context.
 type Case struct {
-	Name string
-	Run  func(ctx context.Context) error
+	Name     string
+	Optional bool
+	Timeout  time.Duration
+	Run      func(ctx context.Context) error
 }
 
-// Suite is the conformance suite of one port; Cases builds the checks against the port's guarded connection.
+type skipped struct{ reason string }
+
+func (s skipped) Error() string { return "skipped: " + s.reason }
+
+// Skip is what a Case returns when it cannot apply to this plugin, with the reason the report records.
+func Skip(reason string) error { return skipped{reason} }
+
+// Suite is the conformance suite of one port; Cases builds the checks against the port's guarded connection,
+// under the runner's context, whose deadline and cancellation bound the whole run.
 type Suite struct {
 	Port    string
 	Version string
-	Cases   func(conn grpc.ClientConnInterface) []Case
+	Cases   func(ctx context.Context, conn grpc.ClientConnInterface) []Case
 }
 
 // Result is the outcome of one case; Port is empty for the protocol cases every plugin runs.
+// A skipped case is not Passed and carries its Reason; it counts as a failure unless it was Optional.
 type Result struct {
-	Port   string  `json:"port,omitempty"`
-	Case   string  `json:"case"`
-	Passed bool    `json:"passed"`
-	Error  string  `json:"error,omitempty"`
-	Millis float64 `json:"ms"`
+	Port     string  `json:"port,omitempty"`
+	Case     string  `json:"case"`
+	Passed   bool    `json:"passed"`
+	Skipped  bool    `json:"skipped,omitempty"`
+	Optional bool    `json:"optional,omitempty"`
+	Reason   string  `json:"reason,omitempty"`
+	Error    string  `json:"error,omitempty"`
+	Millis   float64 `json:"ms"`
 }
+
+func (r Result) failed() bool { return !r.Passed && !(r.Skipped && r.Optional) }
 
 // Latency holds Health round-trip percentiles in milliseconds.
 type Latency struct {
@@ -74,11 +88,22 @@ func (r Report) Digest() string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// Failed lists the names of the failing cases.
+// Failed lists the names of the failing cases: failures and skips of required cases.
 func (r Report) Failed() []string {
 	var out []string
 	for _, c := range r.Cases {
-		if !c.Passed {
+		if c.failed() {
+			out = append(out, c.Case)
+		}
+	}
+	return out
+}
+
+// Skipped lists the names of the skipped cases, optional or not.
+func (r Report) Skipped() []string {
+	var out []string
+	for _, c := range r.Cases {
+		if c.Skipped {
 			out = append(out, c.Case)
 		}
 	}
@@ -117,7 +142,7 @@ func Run(ctx context.Context, h *host.Host, cfg host.Config, suites ...Suite) Re
 		}
 		r.Suites[port] = suites[i].Version
 		conn, _ := c.Port(port)
-		for _, k := range suites[i].Cases(conn) {
+		for _, k := range suites[i].Cases(ctx, conn) {
 			r.record(ctx, port, k)
 		}
 	}
@@ -126,12 +151,19 @@ func Run(ctx context.Context, h *host.Host, cfg host.Config, suites ...Suite) Re
 }
 
 func (r *Report) record(ctx context.Context, port string, k Case) {
-	ctx, cancel := context.WithTimeout(ctx, caseTimeout)
-	defer cancel()
+	if k.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, k.Timeout)
+		defer cancel()
+	}
 	start := time.Now()
 	err := k.Run(ctx)
-	res := Result{Port: port, Case: k.Name, Passed: err == nil, Millis: float64(time.Since(start).Microseconds()) / 1000}
-	if err != nil {
+	res := Result{Port: port, Case: k.Name, Passed: err == nil, Optional: k.Optional, Millis: float64(time.Since(start).Microseconds()) / 1000}
+	var sk skipped
+	switch {
+	case errors.As(err, &sk):
+		res.Skipped, res.Reason = true, sk.reason
+	case err != nil:
 		res.Error = err.Error()
 	}
 	r.Cases = append(r.Cases, res)

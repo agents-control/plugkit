@@ -132,8 +132,10 @@ type ManifestRequest struct {
 	// Protocols the host speaks, for example "acplug/1+wfplugin/1"; the plugin answers with one of them.
 	HostProtocols []string `protobuf:"bytes,1,rep,name=host_protocols,json=hostProtocols,proto3" json:"host_protocols,omitempty"`
 	// Engine name of the host, for example "workflow-engine".
-	HostEngine    string `protobuf:"bytes,2,opt,name=host_engine,json=hostEngine,proto3" json:"host_engine,omitempty"`
-	HostVersion   string `protobuf:"bytes,3,opt,name=host_version,json=hostVersion,proto3" json:"host_version,omitempty"`
+	HostEngine  string `protobuf:"bytes,2,opt,name=host_engine,json=hostEngine,proto3" json:"host_engine,omitempty"`
+	HostVersion string `protobuf:"bytes,3,opt,name=host_version,json=hostVersion,proto3" json:"host_version,omitempty"`
+	// Config of each enabled port from the adapters file, keyed by port name; the host validates it against config_schema after the reply.
+	PortConfig    map[string]*structpb.Struct `protobuf:"bytes,4,rep,name=port_config,json=portConfig,proto3" json:"port_config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -187,6 +189,13 @@ func (x *ManifestRequest) GetHostVersion() string {
 		return x.HostVersion
 	}
 	return ""
+}
+
+func (x *ManifestRequest) GetPortConfig() map[string]*structpb.Struct {
+	if x != nil {
+		return x.PortConfig
+	}
+	return nil
 }
 
 // VersionRange is the inclusive range of acplug wire versions a plugin implements.
@@ -331,7 +340,9 @@ type ProvidedPort struct {
 	Capabilities []string `protobuf:"bytes,4,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 	Limits       *Limits  `protobuf:"bytes,5,opt,name=limits,proto3" json:"limits,omitempty"`
 	// Descriptive metadata of the port, such as "media_type" or "description"; never interpreted as a capability.
-	Metadata      map[string]string `protobuf:"bytes,6,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Metadata map[string]string `protobuf:"bytes,6,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Protocol ids this port speaks; empty means the manifest protocol. The host enables the port only if it speaks one of them.
+	Protocols     []string `protobuf:"bytes,7,rep,name=protocols,proto3" json:"protocols,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -404,6 +415,13 @@ func (x *ProvidedPort) GetLimits() *Limits {
 func (x *ProvidedPort) GetMetadata() map[string]string {
 	if x != nil {
 		return x.Metadata
+	}
+	return nil
+}
+
+func (x *ProvidedPort) GetProtocols() []string {
+	if x != nil {
+		return x.Protocols
 	}
 	return nil
 }
@@ -564,12 +582,17 @@ const file_acplug_v1_plugin_proto_rawDesc = "" +
 	"\x16acplug/v1/plugin.proto\x12\tacplug.v1\x1a\x1cgoogle/protobuf/struct.proto\"=\n" +
 	"\x05Scope\x12\x16\n" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x1c\n" +
-	"\tworkspace\x18\x02 \x01(\tR\tworkspace\"|\n" +
+	"\tworkspace\x18\x02 \x01(\tR\tworkspace\"\xa1\x02\n" +
 	"\x0fManifestRequest\x12%\n" +
 	"\x0ehost_protocols\x18\x01 \x03(\tR\rhostProtocols\x12\x1f\n" +
 	"\vhost_engine\x18\x02 \x01(\tR\n" +
 	"hostEngine\x12!\n" +
-	"\fhost_version\x18\x03 \x01(\tR\vhostVersion\"2\n" +
+	"\fhost_version\x18\x03 \x01(\tR\vhostVersion\x12K\n" +
+	"\vport_config\x18\x04 \x03(\v2*.acplug.v1.ManifestRequest.PortConfigEntryR\n" +
+	"portConfig\x1aV\n" +
+	"\x0fPortConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12-\n" +
+	"\x05value\x18\x02 \x01(\v2\x17.google.protobuf.StructR\x05value:\x028\x01\"2\n" +
 	"\fVersionRange\x12\x10\n" +
 	"\x03min\x18\x01 \x01(\x05R\x03min\x12\x10\n" +
 	"\x03max\x18\x02 \x01(\x05R\x03max\"\xcf\x01\n" +
@@ -578,14 +601,15 @@ const file_acplug_v1_plugin_proto_rawDesc = "" +
 	"\x10protocol_version\x18\x02 \x01(\v2\x17.acplug.v1.VersionRangeR\x0fprotocolVersion\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x04 \x01(\tR\aversion\x12-\n" +
-	"\x05ports\x18\x05 \x03(\v2\x17.acplug.v1.ProvidedPortR\x05ports\"\xc4\x02\n" +
+	"\x05ports\x18\x05 \x03(\v2\x17.acplug.v1.ProvidedPortR\x05ports\"\xe2\x02\n" +
 	"\fProvidedPort\x12\x12\n" +
 	"\x04port\x18\x01 \x01(\tR\x04port\x12\x14\n" +
 	"\x05names\x18\x02 \x03(\tR\x05names\x12;\n" +
 	"\rconfig_schema\x18\x03 \x01(\v2\x16.google.protobuf.ValueR\fconfigSchema\x12\"\n" +
 	"\fcapabilities\x18\x04 \x03(\tR\fcapabilities\x12)\n" +
 	"\x06limits\x18\x05 \x01(\v2\x11.acplug.v1.LimitsR\x06limits\x12A\n" +
-	"\bmetadata\x18\x06 \x03(\v2%.acplug.v1.ProvidedPort.MetadataEntryR\bmetadata\x1a;\n" +
+	"\bmetadata\x18\x06 \x03(\v2%.acplug.v1.ProvidedPort.MetadataEntryR\bmetadata\x12\x1c\n" +
+	"\tprotocols\x18\a \x03(\tR\tprotocols\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"y\n" +
@@ -620,7 +644,7 @@ func file_acplug_v1_plugin_proto_rawDescGZIP() []byte {
 }
 
 var file_acplug_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_acplug_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_acplug_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_acplug_v1_plugin_proto_goTypes = []any{
 	(HealthResponse_Status)(0), // 0: acplug.v1.HealthResponse.Status
 	(*Scope)(nil),              // 1: acplug.v1.Scope
@@ -631,25 +655,29 @@ var file_acplug_v1_plugin_proto_goTypes = []any{
 	(*Limits)(nil),             // 6: acplug.v1.Limits
 	(*HealthRequest)(nil),      // 7: acplug.v1.HealthRequest
 	(*HealthResponse)(nil),     // 8: acplug.v1.HealthResponse
-	nil,                        // 9: acplug.v1.ProvidedPort.MetadataEntry
-	(*structpb.Value)(nil),     // 10: google.protobuf.Value
+	nil,                        // 9: acplug.v1.ManifestRequest.PortConfigEntry
+	nil,                        // 10: acplug.v1.ProvidedPort.MetadataEntry
+	(*structpb.Value)(nil),     // 11: google.protobuf.Value
+	(*structpb.Struct)(nil),    // 12: google.protobuf.Struct
 }
 var file_acplug_v1_plugin_proto_depIdxs = []int32{
-	3,  // 0: acplug.v1.ManifestResponse.protocol_version:type_name -> acplug.v1.VersionRange
-	5,  // 1: acplug.v1.ManifestResponse.ports:type_name -> acplug.v1.ProvidedPort
-	10, // 2: acplug.v1.ProvidedPort.config_schema:type_name -> google.protobuf.Value
-	6,  // 3: acplug.v1.ProvidedPort.limits:type_name -> acplug.v1.Limits
-	9,  // 4: acplug.v1.ProvidedPort.metadata:type_name -> acplug.v1.ProvidedPort.MetadataEntry
-	0,  // 5: acplug.v1.HealthResponse.status:type_name -> acplug.v1.HealthResponse.Status
-	2,  // 6: acplug.v1.Plugin.Manifest:input_type -> acplug.v1.ManifestRequest
-	7,  // 7: acplug.v1.Plugin.Health:input_type -> acplug.v1.HealthRequest
-	4,  // 8: acplug.v1.Plugin.Manifest:output_type -> acplug.v1.ManifestResponse
-	8,  // 9: acplug.v1.Plugin.Health:output_type -> acplug.v1.HealthResponse
-	8,  // [8:10] is the sub-list for method output_type
-	6,  // [6:8] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	9,  // 0: acplug.v1.ManifestRequest.port_config:type_name -> acplug.v1.ManifestRequest.PortConfigEntry
+	3,  // 1: acplug.v1.ManifestResponse.protocol_version:type_name -> acplug.v1.VersionRange
+	5,  // 2: acplug.v1.ManifestResponse.ports:type_name -> acplug.v1.ProvidedPort
+	11, // 3: acplug.v1.ProvidedPort.config_schema:type_name -> google.protobuf.Value
+	6,  // 4: acplug.v1.ProvidedPort.limits:type_name -> acplug.v1.Limits
+	10, // 5: acplug.v1.ProvidedPort.metadata:type_name -> acplug.v1.ProvidedPort.MetadataEntry
+	0,  // 6: acplug.v1.HealthResponse.status:type_name -> acplug.v1.HealthResponse.Status
+	12, // 7: acplug.v1.ManifestRequest.PortConfigEntry.value:type_name -> google.protobuf.Struct
+	2,  // 8: acplug.v1.Plugin.Manifest:input_type -> acplug.v1.ManifestRequest
+	7,  // 9: acplug.v1.Plugin.Health:input_type -> acplug.v1.HealthRequest
+	4,  // 10: acplug.v1.Plugin.Manifest:output_type -> acplug.v1.ManifestResponse
+	8,  // 11: acplug.v1.Plugin.Health:output_type -> acplug.v1.HealthResponse
+	10, // [10:12] is the sub-list for method output_type
+	8,  // [8:10] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_acplug_v1_plugin_proto_init() }
@@ -663,7 +691,7 @@ func file_acplug_v1_plugin_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_acplug_v1_plugin_proto_rawDesc), len(file_acplug_v1_plugin_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

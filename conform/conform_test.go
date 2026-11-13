@@ -1,11 +1,14 @@
 package conform_test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -70,5 +73,80 @@ func TestReportRoundTripAndVerify(t *testing.T) {
 	_ = os.WriteFile(path, raw, 0o600)
 	if _, err := conform.VerifyReport(path, r.Digest(), pin, sink, suites); err == nil || !strings.Contains(err.Error(), "failed") {
 		t.Errorf("report claiming a pass with a failing case: %v", err)
+	}
+}
+
+func caseSuite(cases ...conform.Case) conform.Suite {
+	return conform.Suite{Port: "sink", Version: "t@1", Cases: func(context.Context, grpc.ClientConnInterface) []conform.Case { return cases }}
+}
+
+func refConfig(t *testing.T) host.Config {
+	t.Helper()
+	addr, stop, err := serve.Start(func(s *grpc.Server) {
+		acplugv1.RegisterPluginServer(s, serve.NewPlugin(serve.SinkManifest("ref")))
+		acplugv1.RegisterEventSinkServer(s, &serve.MemorySink{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	return host.Config{Name: "ref", Endpoint: addr, TLS: host.TLS{Insecure: true}}
+}
+
+func TestSkippedCases(t *testing.T) {
+	cfg := refConfig(t)
+	skip := func(context.Context) error { return conform.Skip("needs feature x") }
+	req := conform.Run(t.Context(), &host.Host{}, cfg, caseSuite(conform.Case{Name: "needs x", Run: skip}))
+	opt := conform.Run(t.Context(), &host.Host{}, cfg, caseSuite(conform.Case{Name: "needs x", Optional: true, Run: skip}))
+	if req.Passed || !slices.Equal(req.Failed(), []string{"needs x"}) || !slices.Equal(req.Skipped(), []string{"needs x"}) {
+		t.Fatalf("required skip: passed=%t failed=%v skipped=%v", req.Passed, req.Failed(), req.Skipped())
+	}
+	if !opt.Passed || len(opt.Failed()) != 0 || !slices.Equal(opt.Skipped(), []string{"needs x"}) {
+		t.Fatalf("optional skip: passed=%t failed=%v skipped=%v", opt.Passed, opt.Failed(), opt.Skipped())
+	}
+	last := opt.Cases[len(opt.Cases)-1]
+	if !last.Skipped || last.Passed || last.Reason != "needs feature x" || last.Error != "" {
+		t.Fatalf("skipped result = %+v", last)
+	}
+	for name, tc := range map[string]struct {
+		r   conform.Report
+		err bool
+	}{"required": {req, true}, "optional": {opt, false}} {
+		path := filepath.Join(t.TempDir(), "r.json")
+		raw, _ := json.Marshal(tc.r)
+		_ = os.WriteFile(path, raw, 0o600)
+		_, err := conform.VerifyReport(path, tc.r.Digest(), host.Pin{Digest: tc.r.ManifestDigest}, []string{"sink"}, []conform.Suite{caseSuite()})
+		if (err != nil) != tc.err {
+			t.Errorf("%s skip: VerifyReport err = %v", name, err)
+		}
+	}
+}
+
+func TestRunnerContextReachesSuite(t *testing.T) {
+	cfg := refConfig(t)
+	type key struct{}
+	ctx, cancel := context.WithTimeout(context.WithValue(t.Context(), key{}, "run"), 150*time.Millisecond)
+	defer cancel()
+	var built any
+	suite := conform.Suite{Port: "sink", Version: "t@1", Cases: func(ctx context.Context, _ grpc.ClientConnInterface) []conform.Case {
+		built = ctx.Value(key{})
+		return []conform.Case{
+			{Name: "runner deadline", Run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }},
+			{Name: "case timeout", Timeout: 20 * time.Millisecond, Run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }},
+		}
+	}}
+	start := time.Now()
+	r := conform.Run(ctx, &host.Host{}, cfg, suite)
+	if built != "run" || !slices.Contains(r.Failed(), "runner deadline") || !slices.Contains(r.Failed(), "case timeout") || time.Since(start) > 2*time.Second {
+		t.Fatalf("suite ctx = %v failed = %v after %v", built, r.Failed(), time.Since(start))
+	}
+}
+
+func TestCLIPrintsSkipWithReason(t *testing.T) {
+	cfg := refConfig(t)
+	cli := conform.CLI{Suites: []conform.Suite{caseSuite(conform.Case{Name: "needs x", Optional: true, Run: func(context.Context) error { return conform.Skip("needs feature x") }})}}
+	var out, errb strings.Builder
+	if code := cli.Main([]string{"-endpoint", cfg.Endpoint, "-insecure", "-timeout", "20s"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "SKIP sink/needs x") || !strings.Contains(out.String(), "needs feature x") {
+		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errb.String())
 	}
 }
