@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -26,8 +27,10 @@ var spec = adapters.Spec{
 	Engine:    "example-engine",
 	EnvPrefix: "EX",
 	Ports: map[string]adapters.PortSpec{
-		"store":     {Default: []string{"builtin:postgres"}, Builtins: []string{"postgres"}, Memory: true, Plugin: true, Stateful: true, Aliases: []string{"EX_STORE_KIND"}},
-		"sink":      {Default: []string{"builtin:log"}, Builtins: []string{"log", "http"}, Memory: true, Plugin: true, Capabilities: map[string][]string{"builtin:http": {"batch"}}},
+		"store": {Default: []string{"builtin:postgres"}, Builtins: []string{"postgres"}, Memory: true, Plugin: true, Stateful: true, Aliases: []string{"EX_STORE_KIND"},
+			BuiltinConfig: map[string]map[string]adapters.ConfigKind{"builtin:postgres": {"databaseUrlRef": adapters.ConfigRef}}},
+		"sink": {Default: []string{"builtin:log"}, Builtins: []string{"log", "http"}, Memory: true, Plugin: true, Capabilities: map[string][]string{"builtin:http": {"batch"}},
+			BuiltinConfig: map[string]map[string]adapters.ConfigKind{"builtin:http": {"url": adapters.ConfigString, "secretRef": adapters.ConfigRef, "batch": adapters.ConfigNumber, "gzip": adapters.ConfigBool, "nested": adapters.ConfigString}}},
 		"policy":    {Default: []string{"builtin:grants"}, Builtins: []string{"grants", "allow-all"}, Plugin: true, Sensitive: true, Weak: []string{"builtin:allow-all"}},
 		"transport": {Default: []string{"builtin:http"}, Builtins: []string{"http", "exec"}, Plugin: true, Multi: true},
 	},
@@ -126,6 +129,11 @@ func TestCheckFindings(t *testing.T) {
 		"undeclared plugin":    {yaml: "ports: {sink: {use: plugin:nope}}", want: "not declared"},
 		"bad use":              {yaml: "ports: {sink: {use: 'plugin:'}}", want: "must be memory"},
 		"wrong engine":         {yaml: "engine: other", want: "this binary"},
+		"undeclared key":       {yaml: "ports: {sink: {use: builtin:http, config: {proxy: x}}}", want: "does not accept config key \"proxy\""},
+		"config on memory":     {yaml: "allowMemory: true\nports: {sink: {use: memory, config: {url: x}}}", want: "does not accept config key \"url\""},
+		"wrong kind":           {yaml: "ports: {sink: {use: builtin:http, config: {batch: many, gzip: yes}}}", want: "must be a number"},
+		"declared keys":        {yaml: "ports: {sink: {use: builtin:http, config: {url: x, batch: 100, gzip: true, secretRef: env:S}}}"},
+		"plugin keeps its own": {yaml: "mode: dev\nports: {transport: {use: [builtin:http, plugin:p], config: {anything: 1}}}\nplugins: [{name: p, endpoint: 'p:1'}]"},
 		"production conformance": {
 			yaml: "ports: {sink: {use: plugin:p}}\nplugins: [{name: p, endpoint: 'p:1'}]", want: "production needs require.conformance",
 		},
@@ -300,5 +308,85 @@ func TestAllowMemoryEnvConflictsWithFile(t *testing.T) {
 	}
 	if f, err := adapters.Load(spec, nil, []string{"EX_ALLOW_MEMORY=true"}); err != nil || !f.AllowMemory {
 		t.Fatalf("env form = %+v %v", f, err)
+	}
+}
+
+func TestEnvHelpers(t *testing.T) {
+	names := adapters.EnvNames(spec)
+	for _, want := range []string{"EX_ADAPTERS_FILE", "EX_MODE", "EX_ALLOW_MEMORY", "EX_STORE", "EX_STORE_KIND", "EX_TRANSPORT"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("EnvNames lacks %s: %v", want, names)
+		}
+	}
+	env := map[string]string{"EX_STORE_KIND": "memory", "EX_MODE": "dev", "UNRELATED": "x"}
+	got := adapters.Environ(spec, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"EX_MODE=dev", "EX_STORE_KIND=memory"}) {
+		t.Fatalf("Environ = %v", got)
+	}
+	f, err := adapters.Load(spec, nil, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, ok := f.First("store"); !ok || u.Tier != adapters.TierMemory {
+		t.Fatalf("First(store) = %+v %t", u, ok)
+	}
+	if u, ok := f.First("transport"); !ok || u != (adapters.Use{Tier: adapters.TierBuiltin, Name: "http"}) {
+		t.Fatalf("First(transport) = %+v %t", u, ok)
+	}
+	if _, ok := f.First("cache"); ok {
+		t.Fatal("unknown port has no first use")
+	}
+}
+
+func TestPlanAgainstAuthenticatedEngine(t *testing.T) {
+	doc := discovery.Handler(func() discovery.Document { return discovery.Document{Engine: "example-engine", Mode: "production"} })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer op-token" || r.Header.Get("X-Tenant") != "ops" {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		doc.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("EX_OP_TOKEN", "op-token")
+	t.Setenv("EX_TENANT", "ops")
+	var out, errOut bytes.Buffer
+	args := []string{"plan", "--against", srv.URL}
+	if code := adapters.Main(spec, args, nil, &out, &errOut); code != 1 {
+		t.Fatalf("unauthenticated plan = %d", code)
+	}
+	args = append(args, "--token", "env:EX_OP_TOKEN", "--header", "X-Tenant=env:EX_TENANT")
+	if code := adapters.Main(spec, args, nil, &out, &errOut); code != 0 {
+		t.Fatalf("authenticated plan = %d: %s", code, errOut.String())
+	}
+	if code := adapters.Main(spec, []string{"plan", "--against", srv.URL, "--token", "op-token"}, nil, &out, &errOut); code != 2 {
+		t.Fatalf("a literal token must be refused, got %d", code)
+	}
+}
+
+func TestDiffLeavesEmbeddedPortsToTheEmbedder(t *testing.T) {
+	current := discovery.Document{Engine: "example-engine", Mode: "production", Adapters: []discovery.Row{
+		{Port: "sink", Tier: "builtin", Name: "log"},
+		{Port: "policy", Tier: "builtin", Name: "grants"},
+		{Port: "transport", Tier: "builtin", Name: "http"},
+	}}
+	current.ReplacePort("store", discovery.EmbeddedRow("store", "custom-kv"))
+	if p := adapters.Diff(spec, load(t, ""), current); len(p.Changes) != 0 {
+		t.Fatalf("an embedded port is not plannable from the file: %+v", p)
+	}
+}
+
+func TestPlanRefusesCredentialsOverPlaintext(t *testing.T) {
+	t.Setenv("EX_OP_TOKEN", "op-token")
+	var out, errOut bytes.Buffer
+	for _, args := range [][]string{
+		{"plan", "--against", "http://engine.internal:8080", "--token", "env:EX_OP_TOKEN"},
+		{"plan", "--against", "http://10.0.0.9:8080", "--header", "X-Key=env:EX_OP_TOKEN"},
+	} {
+		errOut.Reset()
+		if code := adapters.Main(spec, args, nil, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "plaintext") {
+			t.Fatalf("%v = %d: %s", args, code, errOut.String())
+		}
 	}
 }

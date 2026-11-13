@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -13,7 +15,9 @@ import (
 type portConn struct {
 	cc       grpc.ClientConnInterface
 	deadline time.Duration
+	idle     time.Duration
 	slots    chan struct{}
+	streams  chan struct{}
 	maxBytes int
 }
 
@@ -23,10 +27,8 @@ func (p *portConn) Invoke(ctx context.Context, method string, args, reply any, o
 	if m, ok := args.(proto.Message); ok && proto.Size(m) > p.maxBytes {
 		return status.Errorf(codes.ResourceExhausted, "request of %d bytes exceeds the %d byte limit", proto.Size(m), p.maxBytes)
 	}
-	select {
-	case p.slots <- struct{}{}:
-	default:
-		return status.Error(codes.ResourceExhausted, "plugin bulkhead is full")
+	if err := acquire(p.slots, "plugin bulkhead is full"); err != nil {
+		return err
 	}
 	defer func() { <-p.slots }()
 	ctx, cancel := context.WithTimeout(ctx, p.deadline)
@@ -35,7 +37,59 @@ func (p *portConn) Invoke(ctx context.Context, method string, args, reply any, o
 }
 
 func (p *portConn) NewStream(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-	return p.cc.NewStream(ctx, desc, method, append(opts, p.sizes()...)...)
+	if err := acquire(p.streams, "plugin stream cap is reached"); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	var once sync.Once
+	finish := func() { once.Do(func() { cancel(); <-p.streams }) }
+	context.AfterFunc(ctx, finish)
+	cs, err := p.cc.NewStream(ctx, desc, method, append(opts, p.sizes()...)...)
+	if err != nil {
+		finish()
+		return nil, err
+	}
+	return &idleStream{ClientStream: cs, cancel: finish, idle: p.idle}, nil
+}
+
+func acquire(pool chan struct{}, full string) error {
+	select {
+	case pool <- struct{}{}:
+		return nil
+	default:
+		return status.Error(codes.ResourceExhausted, full)
+	}
+}
+
+type idleStream struct {
+	grpc.ClientStream
+	cancel func()
+	idle   time.Duration
+}
+
+func (s *idleStream) SendMsg(m any) error {
+	return s.guard(func() error { return s.ClientStream.SendMsg(m) })
+}
+
+func (s *idleStream) RecvMsg(m any) error {
+	err := s.guard(func() error { return s.ClientStream.RecvMsg(m) })
+	if err != nil {
+		s.cancel()
+	}
+	return err
+}
+
+func (s *idleStream) guard(op func() error) error {
+	if s.idle < 0 {
+		return op()
+	}
+	var expired atomic.Bool
+	timer := time.AfterFunc(s.idle, func() { expired.Store(true); s.cancel() })
+	err := op()
+	if !timer.Stop() && expired.Load() {
+		return status.Errorf(codes.DeadlineExceeded, "plugin stream idle for %s", s.idle)
+	}
+	return err
 }
 
 func (p *portConn) sizes() []grpc.CallOption {

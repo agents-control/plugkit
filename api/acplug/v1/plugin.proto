@@ -57,6 +57,8 @@ message ProvidedPort {
   // Declared capabilities, "name" or "name=value"; the host narrows them to what it supports.
   repeated string capabilities = 4;
   Limits limits = 5;
+  // Descriptive metadata of the port, such as "media_type" or "description"; never interpreted as a capability.
+  map<string, string> metadata = 6;
 }
 
 // Limits are the plugin's own ceilings; the host applies the smaller of its value and the plugin's.

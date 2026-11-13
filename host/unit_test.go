@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -135,5 +136,37 @@ func TestStreamLineIsCapped(t *testing.T) {
 	}
 	if err := stream.RecvMsg(&acplugv1.HealthResponse{}); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("oversized stream line = %v, want RESOURCE_EXHAUSTED", err)
+	}
+}
+
+func TestStreamSendDoesNotWaitOnABlockedReceive(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+	stream, err := newHTTPConn(srv.URL, srv.Client(), "", 1024).NewStream(t.Context(), &grpc.StreamDesc{ServerStreams: true}, "/x.v1.S/Watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.SendMsg(&acplugv1.HealthRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = stream.RecvMsg(&acplugv1.HealthResponse{}) }()
+	time.Sleep(100 * time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- stream.SendMsg(&acplugv1.HealthRequest{}) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a second request on a server stream must be refused")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendMsg blocked behind a receive waiting on the plugin")
 	}
 }

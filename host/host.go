@@ -44,19 +44,23 @@ type Legacy struct {
 	Manifest func(ctx context.Context, conn grpc.ClientConnInterface) (*acplugv1.ManifestResponse, error)
 }
 
-// Host is the engine side of acplug/1: what it speaks, how it resolves credentials and the ceilings it imposes.
-// Zero values pick defaults: protocol acplug/1, a 10 s deadline, 64 calls in flight and 4 MiB messages per port.
+// Host is the engine side of acplug/1. Zero values default per port to acplug/1, a 10 s unary deadline, 64 unary in flight,
+// 1024 streams in their own pool, 60 s stream idle (negative disables), 4 MiB; per-tenant caps belong to the engine.
 type Host struct {
-	Engine          string
-	Version         string
-	Protocols       []string
-	Secrets         SecretResolver
-	Supported       map[string][]string
-	Deadlines       map[string]time.Duration
-	DefaultDeadline time.Duration
-	MaxInFlight     int
-	MaxMessageBytes int
-	Legacy          []Legacy
+	Engine            string
+	Version           string
+	Protocols         []string
+	Secrets           SecretResolver
+	Supported         map[string][]string
+	Deadlines         map[string]time.Duration
+	DefaultDeadline   time.Duration
+	StreamIdle        map[string]time.Duration
+	DefaultStreamIdle time.Duration
+	StreamCaps        map[string]int
+	DefaultStreamCap  int
+	MaxInFlight       int
+	MaxMessageBytes   int
+	Legacy            []Legacy
 }
 
 // Dial connects to the plugin, negotiates the manifest, validates the port settings, requires SERVING and pins the manifest.
@@ -115,7 +119,7 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 		if err := validateSettings(p, c.cfg.Settings[p.GetPort()]); err != nil {
 			return err
 		}
-		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p)}
+		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p), metadata: p.GetMetadata()}
 	}
 	if err := h.requireCapabilities(c); err != nil {
 		return err
@@ -245,7 +249,21 @@ func (h *Host) guard(cc grpc.ClientConnInterface, p *acplugv1.ProvidedPort) *por
 	if n := int(l.GetMaxMessageBytes()); n > 0 && n < maxBytes {
 		maxBytes = n
 	}
-	return &portConn{cc: cc, deadline: deadline, slots: make(chan struct{}, inFlight), maxBytes: maxBytes}
+	idle := h.DefaultStreamIdle
+	if d, ok := h.StreamIdle[p.GetPort()]; ok {
+		idle = d
+	}
+	if idle == 0 {
+		idle = time.Minute
+	}
+	streams := h.DefaultStreamCap
+	if n, ok := h.StreamCaps[p.GetPort()]; ok {
+		streams = n
+	}
+	if streams <= 0 {
+		streams = 1024
+	}
+	return &portConn{cc: cc, deadline: deadline, idle: idle, slots: make(chan struct{}, inFlight), streams: make(chan struct{}, streams), maxBytes: maxBytes}
 }
 
 func (h *Host) protocols() []string {

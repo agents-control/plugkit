@@ -37,20 +37,32 @@ type Spec struct {
 	Ports     map[string]PortSpec
 }
 
-// PortSpec says which selections a port accepts and how a change to it is judged.
-// Stateful changes need a data migration; Sensitive ports weaken when served by a plugin or by a Weak built-in.
+// PortSpec says which selections a port accepts and how a change is judged: Stateful needs a data migration, Sensitive
+// weakens on a plugin or Weak built-in; BuiltinConfig lists the config keys each "builtin:<name>" accepts, nothing else.
 type PortSpec struct {
-	Default      []string
-	Builtins     []string
-	Memory       bool
-	Plugin       bool
-	Multi        bool
-	Stateful     bool
-	Sensitive    bool
-	Weak         []string
-	Aliases      []string
-	Capabilities map[string][]string
+	Default       []string
+	Builtins      []string
+	Memory        bool
+	Plugin        bool
+	Multi         bool
+	Stateful      bool
+	Sensitive     bool
+	Weak          []string
+	Aliases       []string
+	Capabilities  map[string][]string
+	BuiltinConfig map[string]map[string]ConfigKind
 }
+
+// ConfigKind is the value type a built-in config key accepts.
+type ConfigKind string
+
+// Config kinds; ConfigRef values must be references such as env:NAME.
+const (
+	ConfigRef    ConfigKind = "ref"
+	ConfigString ConfigKind = "string"
+	ConfigBool   ConfigKind = "bool"
+	ConfigNumber ConfigKind = "number"
+)
 
 // File is the adapters.yaml document, or the same desired state built from the env form.
 type File struct {
@@ -147,7 +159,7 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(spec.Ports)) {
 		ps := spec.Ports[name]
-		uses, from, err := envUses(env, append([]string{spec.EnvPrefix + "_" + strings.ToUpper(name)}, ps.Aliases...))
+		uses, from, err := envUses(env, spec.portEnv(name))
 		if err != nil {
 			return File{}, err
 		}
@@ -163,6 +175,41 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 	}
 	bindPlugins(&f)
 	return f, nil
+}
+
+// EnvNames lists every variable the adapters layer reads: <P>_ADAPTERS_FILE, <P>_MODE, <P>_ALLOW_MEMORY,
+// then each port's <P>_<PORT> and aliases, in port order.
+func EnvNames(spec Spec) []string {
+	names := []string{spec.EnvPrefix + "_ADAPTERS_FILE", spec.EnvPrefix + "_MODE", spec.EnvPrefix + "_ALLOW_MEMORY"}
+	for _, port := range slices.Sorted(maps.Keys(spec.Ports)) {
+		names = append(names, spec.portEnv(port)...)
+	}
+	return names
+}
+
+// Environ returns the KEY=value pairs of EnvNames that lookup finds, ready for Load; os.LookupEnv fits lookup.
+func Environ(spec Spec, lookup func(string) (string, bool)) []string {
+	var out []string
+	for _, n := range EnvNames(spec) {
+		if v, ok := lookup(n); ok {
+			out = append(out, n+"="+v)
+		}
+	}
+	return out
+}
+
+func (spec Spec) portEnv(port string) []string {
+	return append([]string{spec.EnvPrefix + "_" + strings.ToUpper(port)}, spec.Ports[port].Aliases...)
+}
+
+// First returns the first selection of port, false when the port is unset or its first use does not parse.
+func (f File) First(port string) (Use, bool) {
+	uses := f.Ports[port].Use
+	if len(uses) == 0 {
+		return Use{}, false
+	}
+	u, err := ParseUse(uses[0])
+	return u, err == nil
 }
 
 func envUses(env map[string]string, names []string) (Uses, string, error) {
