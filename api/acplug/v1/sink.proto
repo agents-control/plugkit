@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package acplug.v1;
+
+option go_package = "github.com/agents-control/plugkit/api/acplug/v1;acplugv1";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// EventSink receives batches of outbox events, at least once; deduplicate by Event.id.
+service EventSink {
+  rpc Publish(PublishRequest) returns (PublishResponse);
+}
+
+// Event is CloudEvents-shaped; engine-specific attributes travel as CloudEvents extensions.
+message Event {
+  string id = 1;
+  string source = 2;
+  string spec_version = 3;
+  string type = 4;
+  string subject = 5;
+  google.protobuf.Timestamp time = 6;
+  string data_content_type = 7;
+  string data_schema = 8;
+  google.protobuf.Value data = 9;
+  string tenant = 10;
+  string workspace = 11;
+  map<string, string> extensions = 12;
+}
+
+message PublishRequest {
+  repeated Event events = 1;
+}
+
+// accepted must equal the batch size; anything else is a failed delivery of the whole batch.
+message PublishResponse {
+  int32 accepted = 1;
+}
