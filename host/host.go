@@ -128,8 +128,8 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 }
 
 func (h *Host) manifest(ctx context.Context, c *Client) (*acplugv1.ManifestResponse, error) {
-	req := &acplugv1.ManifestRequest{HostProtocols: h.protocols(), HostEngine: h.Engine, HostVersion: h.Version}
-	m, err := acplugv1.NewPluginClient(c.conn).Manifest(ctx, req)
+	c.request = &acplugv1.ManifestRequest{HostProtocols: h.protocols(), HostEngine: h.Engine, HostVersion: h.Version}
+	m, err := acplugv1.NewPluginClient(c.conn).Manifest(ctx, c.request)
 	if status.Code(err) != codes.Unimplemented {
 		if err != nil {
 			return nil, fmt.Errorf("manifest: %w", err)

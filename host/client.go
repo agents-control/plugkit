@@ -42,6 +42,7 @@ type enabledPort struct {
 // Client is a dialed, negotiated and pinned plugin; Port hands out guarded connections for engine adapters.
 type Client struct {
 	cfg      Config
+	request  *acplugv1.ManifestRequest
 	conn     grpc.ClientConnInterface
 	close    func() error
 	health   string
@@ -109,13 +110,26 @@ func (c *Client) Recheck(ctx context.Context) Status {
 		if s == acplugv1.HealthResponse_STATUS_DEGRADED {
 			st.State = StateDegraded
 		}
-	} else if m, err := acplugv1.NewPluginClient(c.conn).Manifest(ctx, &acplugv1.ManifestRequest{HostProtocols: []string{c.pin.Protocol}}); !c.legacy && err == nil && Digest(m) != c.pin.Digest {
-		st = Status{State: StateDegraded, Detail: "manifest drift: " + Digest(m) + " differs from pinned " + c.pin.Digest}
+	} else if digest, ok := c.manifestDigest(ctx); ok && digest != c.pin.Digest {
+		st = Status{State: StateDegraded, Detail: "manifest drift: " + digest + " differs from pinned " + c.pin.Digest}
 	}
 	c.mu.Lock()
 	c.status = st
 	c.mu.Unlock()
 	return st
+}
+
+func (c *Client) manifestDigest(ctx context.Context) (string, bool) {
+	if c.legacy {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
+	defer cancel()
+	m, err := acplugv1.NewPluginClient(c.conn).Manifest(ctx, c.request)
+	if err != nil {
+		return "", false
+	}
+	return Digest(m), true
 }
 
 // Close releases the connection.

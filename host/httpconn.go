@@ -155,7 +155,12 @@ func (s *httpStream) RecvMsg(m any) error {
 		return status.Error(codes.Internal, "RecvMsg before SendMsg")
 	}
 	for {
-		line, err := scan.ReadBytes('\n')
+		line, err := readLine(scan, s.conn.maxBody)
+		if status.Code(err) == codes.ResourceExhausted {
+			s.cancel()
+			_ = s.body.Close()
+			return err
+		}
 		if len(bytes.TrimSpace(line)) > 0 {
 			return decodeFrame(line, m)
 		}
@@ -169,6 +174,20 @@ func (s *httpStream) RecvMsg(m any) error {
 				return status.FromContextError(s.ctx.Err()).Err()
 			}
 			return status.Error(codes.Unavailable, "plugin stream broken")
+		}
+	}
+}
+
+func readLine(r *bufio.Reader, limit int64) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if int64(len(line)+len(chunk)) > limit {
+			return nil, status.Error(codes.ResourceExhausted, "plugin stream line exceeds the message size limit")
+		}
+		line = append(line, chunk...)
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return line, err
 		}
 	}
 }

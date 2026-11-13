@@ -3,8 +3,14 @@ package host
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc"
+
+	acplugv1 "github.com/agents-control/plugkit/api/acplug/v1"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -110,5 +116,24 @@ func mustJSON(v any) string {
 func TestUnavailable(t *testing.T) {
 	if !Unavailable(status.Error(codes.Unavailable, "")) || Unavailable(status.Error(codes.InvalidArgument, "")) || Unavailable(errors.New("x")) {
 		t.Fatal("classification")
+	}
+}
+
+func TestStreamLineIsCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(`{"detail":"` + strings.Repeat("x", 64<<10) + `"}` + "\n"))
+	}))
+	t.Cleanup(srv.Close)
+	conn := newHTTPConn(srv.URL, srv.Client(), "", 1024)
+	stream, err := conn.NewStream(t.Context(), &grpc.StreamDesc{ServerStreams: true}, "/acplug.v1.Plugin/Health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.SendMsg(&acplugv1.HealthRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.RecvMsg(&acplugv1.HealthResponse{}); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("oversized stream line = %v, want RESOURCE_EXHAUSTED", err)
 	}
 }

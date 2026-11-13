@@ -21,6 +21,7 @@ func validateJSON(schema *structpb.Value, instance []byte) error {
 	}
 	c := jsonschema.NewCompiler()
 	c.DefaultDraft(jsonschema.Draft2020)
+	c.UseLoader(jsonschema.SchemeURLLoader{})
 	if err := c.AddResource("mem://config.json", doc); err != nil {
 		return err
 	}

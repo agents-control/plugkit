@@ -393,3 +393,39 @@ func TestHTTPMapping(t *testing.T) {
 		t.Fatalf("mapped error = %v", err)
 	}
 }
+
+func TestConfigSchemaCannotLoadHostFiles(t *testing.T) {
+	ref := filepath.Join(t.TempDir(), "s.json")
+	_ = os.WriteFile(ref, []byte(`true`), 0o600)
+	m := serve.SinkManifest("ref")
+	m.Ports[0].ConfigSchema, _ = structpb.NewValue(map[string]any{"$ref": "file://" + ref})
+	c, err := (&host.Host{}).Dial(t.Context(), plain(start(t, serve.NewPlugin(m), &serve.MemorySink{})))
+	if err == nil {
+		_ = c.Close()
+		t.Fatal("a config_schema $ref to a host file must be refused")
+	}
+}
+
+type recordingPlugin struct {
+	*serve.Plugin
+	mu   sync.Mutex
+	last *acplugv1.ManifestRequest
+}
+
+func (r *recordingPlugin) Manifest(ctx context.Context, req *acplugv1.ManifestRequest) (*acplugv1.ManifestResponse, error) {
+	r.mu.Lock()
+	r.last = req
+	r.mu.Unlock()
+	return r.Plugin.Manifest(ctx, req)
+}
+
+func TestRecheckSendsHostIdentity(t *testing.T) {
+	p := &recordingPlugin{Plugin: serve.NewPlugin(serve.SinkManifest("ref"))}
+	c := dial(t, &host.Host{Engine: "example-engine", Version: "1.2.3"}, plain(start(t, p, &serve.MemorySink{})))
+	c.Recheck(t.Context())
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.last.GetHostEngine() != "example-engine" || p.last.GetHostVersion() != "1.2.3" || len(p.last.GetHostProtocols()) == 0 {
+		t.Fatalf("recheck manifest request = %v", p.last)
+	}
+}
