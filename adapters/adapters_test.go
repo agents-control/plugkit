@@ -495,9 +495,14 @@ func TestDialRunsCheckAndSpecValidation(t *testing.T) {
 }
 
 func TestCheckRefusesCredentialsInConfigURLs(t *testing.T) {
-	f := load(t, "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: dev\nports: {sink: {use: plugin:p, config: {dsn: 'postgres://user:pw@db:5432/x', plain: 'https://example.com/x'}}}\nplugins: [{name: p, endpoint: '127.0.0.1:1', tls: {insecure: true}}]")
+	f := load(t, "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: dev\nports: {sink: {use: plugin:p, config: {dsn: 'postgres://user:pw@db:5432/x', redis: 'redis://:pw@h', tok: 'https://tok@host', q: 'https://h/x?password=1', plain: 'https://example.com/x?page=2'}}}\nplugins: [{name: p, endpoint: '127.0.0.1:1', tls: {insecure: true}}]")
 	err := adapters.Check(spec, f).Err()
-	if err == nil || !strings.Contains(err.Error(), "config dsn embeds credentials") || strings.Contains(err.Error(), "config plain") {
+	if err == nil || strings.Contains(err.Error(), "config plain") {
 		t.Fatalf("err = %v", err)
+	}
+	for _, k := range []string{"dsn", "redis", "tok", "q"} {
+		if !strings.Contains(err.Error(), "config "+k+" embeds") {
+			t.Errorf("%s not flagged: %v", k, err)
+		}
 	}
 }

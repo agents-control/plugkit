@@ -15,12 +15,11 @@ import (
 // Path is where engines serve the document.
 const Path = "/v1/adapters"
 
-// Document lists the adapters bound at boot.
+// Document lists the adapters bound at boot and the opt-ins (Acknowledge) the engine was started with.
 type Document struct {
-	Engine string `json:"engine"`
-	Build  string `json:"build,omitempty"`
-	Mode   string `json:"mode,omitempty"`
-	// Acknowledge lists the opt-ins the running engine was started with.
+	Engine      string   `json:"engine"`
+	Build       string   `json:"build,omitempty"`
+	Mode        string   `json:"mode,omitempty"`
 	Acknowledge []string `json:"acknowledge,omitempty"`
 	Adapters    []Row    `json:"adapters"`
 }

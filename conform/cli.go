@@ -65,6 +65,18 @@ func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if corpus {
+		extra := ""
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name != "timeout" {
+				extra = f.Name
+			}
+		})
+		if extra != "" {
+			fmt.Fprintf(stderr, "corpus takes only -timeout, not -%s\n", extra)
+			return 2
+		}
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, timeout)

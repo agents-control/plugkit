@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -50,8 +51,6 @@ func (fs Findings) Warnings() []string {
 	}
 	return out
 }
-
-var credentialURL = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:[^/\s@]+@`)
 
 var secretKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|credential|apikey|api_key|private)`)
 
@@ -219,7 +218,7 @@ func literalSecrets(path string, cfg map[string]any) []string {
 		case map[string]any:
 			out = append(out, literalSecrets(key, v)...)
 		case string:
-			if credentialURL.MatchString(v) {
+			if embedsCredentials(v) {
 				out = append(out, fmt.Sprintf("config %s embeds credentials in a URL; use a Ref key with a reference", key))
 			}
 			isRef := strings.HasSuffix(k, "Ref")
@@ -232,4 +231,20 @@ func literalSecrets(path string, cfg map[string]any) []string {
 		}
 	}
 	return out
+}
+
+func embedsCredentials(v string) bool {
+	u, err := url.Parse(v)
+	if err != nil || (u.Host == "" && u.User == nil) {
+		return false
+	}
+	if u.User != nil {
+		return true
+	}
+	for k := range u.Query() {
+		if secretKey.MatchString(k) {
+			return true
+		}
+	}
+	return false
 }
