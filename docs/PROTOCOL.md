@@ -29,7 +29,7 @@ For call-out ports, and unary methods of any port:
 
 ## Limits
 
-`ProvidedPort.limits` lowers the host's ceilings for that port: `deadline_ms` (unary calls), `max_in_flight` (calls and open streams; excess fails fast with `RESOURCE_EXHAUSTED`), `max_message_bytes` (both directions). Each stream send or receive must complete within the host's idle timeout for the port (60 s by default).
+`ProvidedPort.limits` lowers the host's ceilings for that port: `deadline_ms` (unary calls), `max_in_flight` (unary calls; excess fails fast with `RESOURCE_EXHAUSTED`), `max_message_bytes` (both directions). Open streams draw from a separate per-port pool set by the host (1024 by default), and each stream send or receive must complete within the host's idle timeout for the port (60 s by default).
 
 `ProvidedPort.metadata` carries descriptive strings such as `media_type` or `description`; capabilities stay for what the host can rely on.
 

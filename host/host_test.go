@@ -435,7 +435,12 @@ func silentStreamServer(t *testing.T, limits *acplugv1.Limits) string {
 	schema, _ := structpb.NewValue(true)
 	m := serve.SinkManifest("watch")
 	m.Ports = []*acplugv1.ProvidedPort{{Port: "watch", ConfigSchema: schema, Limits: limits}}
-	desc := grpc.ServiceDesc{ServiceName: "test.v1.Watch", HandlerType: (*any)(nil), Streams: []grpc.StreamDesc{{
+	desc := grpc.ServiceDesc{ServiceName: "test.v1.Watch", HandlerType: (*any)(nil), Methods: []grpc.MethodDesc{{
+		MethodName: "Ping",
+		Handler: func(_ any, _ context.Context, dec func(any) error, _ grpc.UnaryServerInterceptor) (any, error) {
+			return &acplugv1.HealthResponse{Status: acplugv1.HealthResponse_STATUS_SERVING}, dec(&acplugv1.HealthRequest{})
+		},
+	}}, Streams: []grpc.StreamDesc{{
 		StreamName: "Watch", ServerStreams: true,
 		Handler: func(_ any, s grpc.ServerStream) error {
 			if err := s.RecvMsg(&acplugv1.HealthRequest{}); err != nil {
@@ -468,15 +473,15 @@ func openWatch(ctx context.Context, cc grpc.ClientConnInterface) (grpc.ClientStr
 }
 
 func TestStreamIdleTimeoutAndBulkhead(t *testing.T) {
-	addr := silentStreamServer(t, &acplugv1.Limits{MaxInFlight: 1})
-	c := dial(t, &host.Host{StreamIdle: map[string]time.Duration{"watch": 200 * time.Millisecond}}, plain(addr))
+	addr := silentStreamServer(t, nil)
+	c := dial(t, &host.Host{StreamIdle: map[string]time.Duration{"watch": 200 * time.Millisecond}, StreamCaps: map[string]int{"watch": 1}}, plain(addr))
 	cc, _ := c.Port("watch")
 	first, err := openWatch(context.Background(), cc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := openWatch(t.Context(), cc); status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("second stream = %v, want RESOURCE_EXHAUSTED from the bulkhead", err)
+		t.Fatalf("second stream = %v, want RESOURCE_EXHAUSTED from the stream cap", err)
 	}
 	start := time.Now()
 	if err := first.RecvMsg(&acplugv1.HealthResponse{}); status.Code(err) != codes.DeadlineExceeded || time.Since(start) > 5*time.Second {
@@ -518,5 +523,21 @@ func TestPortMetadata(t *testing.T) {
 	}
 	if c.Metadata("transport") != nil {
 		t.Fatal("a port that is not enabled has no metadata")
+	}
+}
+
+func TestStreamsNeverConsumeUnarySlots(t *testing.T) {
+	addr := silentStreamServer(t, &acplugv1.Limits{MaxInFlight: 1})
+	c := dial(t, &host.Host{}, plain(addr))
+	cc, _ := c.Port("watch")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	for i := range 3 {
+		if _, err := openWatch(ctx, cc); err != nil {
+			t.Fatalf("stream %d with one unary slot: %v", i, err)
+		}
+	}
+	if err := cc.Invoke(t.Context(), "/test.v1.Watch/Ping", &acplugv1.HealthRequest{}, &acplugv1.HealthResponse{}); err != nil {
+		t.Fatalf("unary call while streams are open: %v", err)
 	}
 }

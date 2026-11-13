@@ -44,8 +44,8 @@ type Legacy struct {
 	Manifest func(ctx context.Context, conn grpc.ClientConnInterface) (*acplugv1.ManifestResponse, error)
 }
 
-// Host is the engine side of acplug/1: what it speaks, how it resolves credentials and the ceilings it imposes.
-// Zero values pick defaults: acplug/1, 10 s unary deadline, 60 s stream idle (negative disables), 64 in flight, 4 MiB.
+// Host is the engine side of acplug/1. Zero values default per port to acplug/1, a 10 s unary deadline, 64 unary in flight,
+// 1024 streams in their own pool, 60 s stream idle (negative disables), 4 MiB; per-tenant caps belong to the engine.
 type Host struct {
 	Engine            string
 	Version           string
@@ -56,6 +56,8 @@ type Host struct {
 	DefaultDeadline   time.Duration
 	StreamIdle        map[string]time.Duration
 	DefaultStreamIdle time.Duration
+	StreamCaps        map[string]int
+	DefaultStreamCap  int
 	MaxInFlight       int
 	MaxMessageBytes   int
 	Legacy            []Legacy
@@ -254,7 +256,14 @@ func (h *Host) guard(cc grpc.ClientConnInterface, p *acplugv1.ProvidedPort) *por
 	if idle == 0 {
 		idle = time.Minute
 	}
-	return &portConn{cc: cc, deadline: deadline, idle: idle, slots: make(chan struct{}, inFlight), maxBytes: maxBytes}
+	streams := h.DefaultStreamCap
+	if n, ok := h.StreamCaps[p.GetPort()]; ok {
+		streams = n
+	}
+	if streams <= 0 {
+		streams = 1024
+	}
+	return &portConn{cc: cc, deadline: deadline, idle: idle, slots: make(chan struct{}, inFlight), streams: make(chan struct{}, streams), maxBytes: maxBytes}
 }
 
 func (h *Host) protocols() []string {

@@ -17,6 +17,7 @@ type portConn struct {
 	deadline time.Duration
 	idle     time.Duration
 	slots    chan struct{}
+	streams  chan struct{}
 	maxBytes int
 }
 
@@ -26,22 +27,22 @@ func (p *portConn) Invoke(ctx context.Context, method string, args, reply any, o
 	if m, ok := args.(proto.Message); ok && proto.Size(m) > p.maxBytes {
 		return status.Errorf(codes.ResourceExhausted, "request of %d bytes exceeds the %d byte limit", proto.Size(m), p.maxBytes)
 	}
-	if err := p.acquire(); err != nil {
+	if err := acquire(p.slots, "plugin bulkhead is full"); err != nil {
 		return err
 	}
-	defer p.release()
+	defer func() { <-p.slots }()
 	ctx, cancel := context.WithTimeout(ctx, p.deadline)
 	defer cancel()
 	return p.cc.Invoke(ctx, method, args, reply, append(opts, p.sizes()...)...)
 }
 
 func (p *portConn) NewStream(ctx context.Context, desc *grpc.StreamDesc, method string, opts ...grpc.CallOption) (grpc.ClientStream, error) {
-	if err := p.acquire(); err != nil {
+	if err := acquire(p.streams, "plugin stream cap is reached"); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	var once sync.Once
-	finish := func() { once.Do(func() { cancel(); p.release() }) }
+	finish := func() { once.Do(func() { cancel(); <-p.streams }) }
 	context.AfterFunc(ctx, finish)
 	cs, err := p.cc.NewStream(ctx, desc, method, append(opts, p.sizes()...)...)
 	if err != nil {
@@ -51,16 +52,14 @@ func (p *portConn) NewStream(ctx context.Context, desc *grpc.StreamDesc, method 
 	return &idleStream{ClientStream: cs, cancel: finish, idle: p.idle}, nil
 }
 
-func (p *portConn) acquire() error {
+func acquire(pool chan struct{}, full string) error {
 	select {
-	case p.slots <- struct{}{}:
+	case pool <- struct{}{}:
 		return nil
 	default:
-		return status.Error(codes.ResourceExhausted, "plugin bulkhead is full")
+		return status.Error(codes.ResourceExhausted, full)
 	}
 }
-
-func (p *portConn) release() { <-p.slots }
 
 type idleStream struct {
 	grpc.ClientStream
