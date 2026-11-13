@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package acplug.v1;
+
+option go_package = "github.com/agents-control/plugkit/api/acplug/v1;acplugv1";
+
+import "google/protobuf/struct.proto";
+
+// acplug/1: the common layer every engine plugin serves, whatever its language (UP-ADR-001 §3).
+// Domain failures are typed messages of each port; UNAVAILABLE, DEADLINE_EXCEEDED, RESOURCE_EXHAUSTED,
+// ABORTED and CANCELLED mean the plugin is unavailable and the call may be retried.
+
+// Plugin is served by every plugin process: identity, capability negotiation and liveness.
+service Plugin {
+  // Manifest returns what the plugin provides; the host refuses a protocol or version it does not speak.
+  rpc Manifest(ManifestRequest) returns (ManifestResponse);
+  // Health reports readiness; only STATUS_SERVING receives traffic.
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+// Scope is the tenant and workspace a request acts for.
+message Scope {
+  string tenant = 1;
+  string workspace = 2;
+}
+
+message ManifestRequest {
+  // Protocols the host speaks, for example "acplug/1+wfplugin/1"; the plugin answers with one of them.
+  repeated string host_protocols = 1;
+  // Engine name of the host, for example "workflow-engine".
+  string host_engine = 2;
+  string host_version = 3;
+}
+
+// VersionRange is the inclusive range of acplug wire versions a plugin implements.
+message VersionRange {
+  int32 min = 1;
+  int32 max = 2;
+}
+
+message ManifestResponse {
+  // Protocol chosen from ManifestRequest.host_protocols.
+  string protocol = 1;
+  VersionRange protocol_version = 2;
+  string name = 3;
+  string version = 4;
+  repeated ProvidedPort ports = 5;
+}
+
+// ProvidedPort declares one port, for example "sink", "transport" or "run_store".
+message ProvidedPort {
+  string port = 1;
+  // Names the port answers to, such as transport names or trigger kinds; empty for singleton ports.
+  repeated string names = 2;
+  // JSON Schema (draft 2020-12) of the port config; required, the boolean true accepts any config.
+  google.protobuf.Value config_schema = 3;
+  // Declared capabilities, "name" or "name=value"; the host narrows them to what it supports.
+  repeated string capabilities = 4;
+  Limits limits = 5;
+}
+
+// Limits are the plugin's own ceilings; the host applies the smaller of its value and the plugin's.
+message Limits {
+  uint32 max_message_bytes = 1;
+  uint32 max_in_flight = 2;
+  uint32 deadline_ms = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_SERVING = 1;
+    STATUS_NOT_SERVING = 2;
+    STATUS_DEGRADED = 3;
+  }
+  Status status = 1;
+  string detail = 2;
+}
