@@ -147,7 +147,7 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 	}
 	for _, name := range slices.Sorted(maps.Keys(spec.Ports)) {
 		ps := spec.Ports[name]
-		uses, from, err := envUses(env, append([]string{spec.EnvPrefix + "_" + strings.ToUpper(name)}, ps.Aliases...))
+		uses, from, err := envUses(env, spec.portEnv(name))
 		if err != nil {
 			return File{}, err
 		}
@@ -163,6 +163,41 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 	}
 	bindPlugins(&f)
 	return f, nil
+}
+
+// EnvNames lists every variable the adapters layer reads: <P>_ADAPTERS_FILE, <P>_MODE, <P>_ALLOW_MEMORY,
+// then each port's <P>_<PORT> and aliases, in port order.
+func EnvNames(spec Spec) []string {
+	names := []string{spec.EnvPrefix + "_ADAPTERS_FILE", spec.EnvPrefix + "_MODE", spec.EnvPrefix + "_ALLOW_MEMORY"}
+	for _, port := range slices.Sorted(maps.Keys(spec.Ports)) {
+		names = append(names, spec.portEnv(port)...)
+	}
+	return names
+}
+
+// Environ returns the KEY=value pairs of EnvNames that lookup finds, ready for Load; os.LookupEnv fits lookup.
+func Environ(spec Spec, lookup func(string) (string, bool)) []string {
+	var out []string
+	for _, n := range EnvNames(spec) {
+		if v, ok := lookup(n); ok {
+			out = append(out, n+"="+v)
+		}
+	}
+	return out
+}
+
+func (spec Spec) portEnv(port string) []string {
+	return append([]string{spec.EnvPrefix + "_" + strings.ToUpper(port)}, spec.Ports[port].Aliases...)
+}
+
+// First returns the first selection of port, false when the port is unset or its first use does not parse.
+func (f File) First(port string) (Use, bool) {
+	uses := f.Ports[port].Use
+	if len(uses) == 0 {
+		return Use{}, false
+	}
+	u, err := ParseUse(uses[0])
+	return u, err == nil
 }
 
 func envUses(env map[string]string, names []string) (Uses, string, error) {

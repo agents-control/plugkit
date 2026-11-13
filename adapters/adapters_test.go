@@ -302,3 +302,31 @@ func TestAllowMemoryEnvConflictsWithFile(t *testing.T) {
 		t.Fatalf("env form = %+v %v", f, err)
 	}
 }
+
+func TestEnvHelpers(t *testing.T) {
+	names := adapters.EnvNames(spec)
+	for _, want := range []string{"EX_ADAPTERS_FILE", "EX_MODE", "EX_ALLOW_MEMORY", "EX_STORE", "EX_STORE_KIND", "EX_TRANSPORT"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("EnvNames lacks %s: %v", want, names)
+		}
+	}
+	env := map[string]string{"EX_STORE_KIND": "memory", "EX_MODE": "dev", "UNRELATED": "x"}
+	got := adapters.Environ(spec, func(k string) (string, bool) { v, ok := env[k]; return v, ok })
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"EX_MODE=dev", "EX_STORE_KIND=memory"}) {
+		t.Fatalf("Environ = %v", got)
+	}
+	f, err := adapters.Load(spec, nil, got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, ok := f.First("store"); !ok || u.Tier != adapters.TierMemory {
+		t.Fatalf("First(store) = %+v %t", u, ok)
+	}
+	if u, ok := f.First("transport"); !ok || u != (adapters.Use{Tier: adapters.TierBuiltin, Name: "http"}) {
+		t.Fatalf("First(transport) = %+v %t", u, ok)
+	}
+	if _, ok := f.First("cache"); ok {
+		t.Fatal("unknown port has no first use")
+	}
+}
