@@ -1,0 +1,13 @@
+# ADR-0003: adapters.yaml semantics the research draft left open
+
+Status: **Accepted** (2026-11-13). Refines UP-ADR-002 §2 and UP-ADR-001 §9.
+
+## Decision
+
+1. **The engine declares a `Spec` once.** Per port: `Default`, `Builtins`, `Memory`, `Plugin`, `Multi`, `Stateful`, `Sensitive`, `Weak`, `Aliases`, built-in `Capabilities`. `Load`, `Check`, `Diff` and `Describe` derive everything from it; no engine-specific branches live in plugkit.
+2. **Env form.** `<P>_<PORT>` (upper case) and each alias select the port; values are comma-separated for multi-valued ports. A bare value other than `memory` means `builtin:<value>`, so `WF_STORE=postgres` keeps working. Two env names that disagree, or a port set in the file and in env, are errors. `<P>_MODE` sets the mode only without a file (the file must state it). `<P>_ALLOW_MEMORY=true` is an explicit opt-in that adds to the file's `allowMemory`.
+3. **Without a file the mode is `production`.** Secure by default: an engine whose default for a stateful port is `memory` must change that default to a built-in or ship `<P>_MODE=dev` in its dev compose profile.
+4. **Conformance is a digest plus a report path.** `require.conformance` (the report digest) cannot be verified alone, so it travels with `require.report`, a path the host reads at boot. `adapters.Dial` verifies the digest, `passed` and that the report's manifest digest equals the pinned one. Production refuses a plugin without both, or with a report that does not verify; dev degrades it.
+5. **Plugin ports are derived.** `plugins[].ports` defaults to the ports whose `use` names the plugin; when set, it must cover them. The host enables only that list intersected with the manifest. Each port's `config` becomes the plugin's settings for that port and is validated against the declared `config_schema` at the handshake; an absent config is `{}`.
+6. **Literal secrets are refused.** In `config`, a key ending in `Ref` must hold a reference (`env:`, `file:`, `<resolver>:`); a key that looks like a secret (`secret`, `token`, `password`, `credential`, `apikey`, `private`) without the `Ref` suffix is an error.
+7. **Plan is `Diff(spec, desired, GET /v1/adapters)`.** Ports compare as sorted selection sets. Flags: `weakening` for memory in production, dev mode replacing production, a `Sensitive` port moving to a plugin or a `Weak` built-in, plaintext to a plugin, a plugin without a conformance report; `data_migration_required` for a `Stateful` port whose selection changes. Hot swap does not exist; apply is a restart, and refusing apply without `--accept-empty-store` belongs to the engine.
