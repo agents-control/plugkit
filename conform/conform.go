@@ -173,8 +173,9 @@ func Verify(ctx context.Context, h *host.Host, fixtures []Fixture, suites ...Sui
 	return errors.Join(errs...)
 }
 
-// VerifyReport reads the report at path and requires its digest, a pass, and the manifest digest the host pinned.
-func VerifyReport(path, digest string, pin host.Pin) (Report, error) {
+// VerifyReport reads the report at path and requires its digest, a pass on every case, the pinned manifest digest,
+// and a result of the host's own suite version for every enabled port.
+func VerifyReport(path, digest string, pin host.Pin, ports []string, suites []Suite) (Report, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return Report{}, fmt.Errorf("conformance report: %w", err)
@@ -188,10 +189,19 @@ func VerifyReport(path, digest string, pin host.Pin) (Report, error) {
 		return r, fmt.Errorf("conformance report format %q, want %s", r.Format, ReportFormat)
 	case r.Digest() != digest:
 		return r, fmt.Errorf("conformance report digest %s differs from the required %s", r.Digest(), digest)
-	case !r.Passed:
+	case !r.Passed || len(r.Failed()) > 0:
 		return r, fmt.Errorf("conformance report failed %v", r.Failed())
 	case r.ManifestDigest != pin.Digest:
 		return r, fmt.Errorf("conformance report is for manifest %s, plugin serves %s", r.ManifestDigest, pin.Digest)
+	}
+	for _, port := range ports {
+		i := slices.IndexFunc(suites, func(s Suite) bool { return s.Port == port })
+		if i < 0 {
+			return r, fmt.Errorf("conformance report: the host has no suite to verify port %q", port)
+		}
+		if got := r.Suites[port]; got != suites[i].Version {
+			return r, fmt.Errorf("conformance report covers port %q with %q, the host requires %s", port, got, suites[i].Version)
+		}
 	}
 	return r, nil
 }

@@ -33,8 +33,25 @@ func TestReportRoundTripAndVerify(t *testing.T) {
 	raw, _ := json.MarshalIndent(r, "", "  ")
 	_ = os.WriteFile(path, raw, 0o600)
 	pin := host.Pin{Digest: r.ManifestDigest}
-	if _, err := conform.VerifyReport(path, r.Digest(), pin); err != nil {
+	sink := []string{"sink"}
+	suites := []conform.Suite{sinktest.Suite()}
+	if _, err := conform.VerifyReport(path, r.Digest(), pin, sink, suites); err != nil {
 		t.Fatalf("verify: %v", err)
+	}
+	other := sinktest.Suite()
+	other.Version = "sinktest@0"
+	for name, tc := range map[string]struct {
+		ports  []string
+		suites []conform.Suite
+		want   string
+	}{
+		"uncovered port": {ports: []string{"sink", "transport"}, suites: suites, want: "transport"},
+		"other version":  {ports: sink, suites: []conform.Suite{other}, want: "sinktest@0"},
+		"no host suite":  {ports: sink, want: "no suite"},
+	} {
+		if _, err := conform.VerifyReport(path, r.Digest(), pin, tc.ports, tc.suites); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v", name, err)
+		}
 	}
 	for name, tc := range map[string]struct {
 		digest string
@@ -44,14 +61,14 @@ func TestReportRoundTripAndVerify(t *testing.T) {
 		"forged digest":  {digest: "sha256:00", pin: pin, want: "differs"},
 		"other manifest": {digest: r.Digest(), pin: host.Pin{Digest: "sha256:other"}, want: "is for manifest"},
 	} {
-		if _, err := conform.VerifyReport(path, tc.digest, tc.pin); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := conform.VerifyReport(path, tc.digest, tc.pin, sink, suites); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
-	r.Passed = false
+	r.Cases[len(r.Cases)-1].Passed = false
 	raw, _ = json.Marshal(r)
 	_ = os.WriteFile(path, raw, 0o600)
-	if _, err := conform.VerifyReport(path, r.Digest(), pin); err == nil || !strings.Contains(err.Error(), "failed") {
-		t.Errorf("failed report: %v", err)
+	if _, err := conform.VerifyReport(path, r.Digest(), pin, sink, suites); err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Errorf("report claiming a pass with a failing case: %v", err)
 	}
 }

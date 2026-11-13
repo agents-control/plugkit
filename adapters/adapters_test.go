@@ -214,7 +214,7 @@ func TestDialVerifiesConformanceAndDescribes(t *testing.T) {
 		return "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: production\nports: {sink: {use: plugin:ref}}\nplugins: [{name: ref, endpoint: '" + addr + "', tls: {insecure: true}, require: {conformance: '" + digest + "', report: '" + path + "'}}]"
 	}
 	f := load(t, doc(report.Digest()))
-	plugins, err := adapters.Dial(t.Context(), h, f)
+	plugins, err := adapters.Dial(t.Context(), h, f, sinktest.Suite())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,8 +229,17 @@ func TestDialVerifiesConformanceAndDescribes(t *testing.T) {
 	if row.Status != host.StateServing || row.Conformance == nil || !row.Conformance.Passed || row.ManifestDigest == "" || row.Conformance.Suite != sinktest.Version {
 		t.Fatalf("row = %+v", row)
 	}
-	if _, err := adapters.Dial(context.Background(), h, load(t, doc("sha256:forged"))); err == nil {
+	if _, err := adapters.Dial(context.Background(), h, load(t, doc("sha256:forged")), sinktest.Suite()); err == nil {
 		t.Fatal("a report digest that does not match must refuse the plugin in production")
+	}
+	noReport := load(t, doc(report.Digest()))
+	noReport.Plugins[0].Require = host.Require{}
+	if p, err := adapters.Dial(context.Background(), h, noReport, sinktest.Suite()); err == nil {
+		_ = p.Close()
+		t.Fatal("production must refuse a plugin without a conformance report even when Check was skipped")
+	}
+	if _, err := adapters.Dial(context.Background(), h, load(t, doc(report.Digest()))); err == nil {
+		t.Fatal("a report the host has no suite to check must refuse the plugin in production")
 	}
 }
 

@@ -19,13 +19,17 @@ type Plugins struct {
 	conformance map[string]*discovery.Conformance
 }
 
-// Dial dials every plugin a port uses and verifies its conformance report; a failed report is fatal in production
-// and degrades the plugin in dev. One failure closes the plugins already dialed.
-func Dial(ctx context.Context, h *host.Host, f File) (*Plugins, error) {
+// Dial dials every plugin a port uses and verifies its report against suites; a missing or failed report is fatal
+// in production and degrades the plugin in dev. One failure closes the plugins already dialed.
+func Dial(ctx context.Context, h *host.Host, f File, suites ...conform.Suite) (*Plugins, error) {
 	p := &Plugins{clients: map[string]*host.Client{}, conformance: map[string]*discovery.Conformance{}}
 	for _, cfg := range f.Plugins {
 		if len(cfg.Ports) == 0 {
 			continue
+		}
+		if f.Mode == ModeProduction && (cfg.Require.Report == "" || cfg.Require.Conformance == "") {
+			_ = p.Close()
+			return nil, fmt.Errorf("plugin %s: production needs require.conformance and require.report", cfg.Name)
 		}
 		c, err := h.Dial(ctx, cfg)
 		if err != nil {
@@ -36,7 +40,7 @@ func Dial(ctx context.Context, h *host.Host, f File) (*Plugins, error) {
 		if cfg.Require.Report == "" {
 			continue
 		}
-		r, err := conform.VerifyReport(cfg.Require.Report, cfg.Require.Conformance, c.Pin())
+		r, err := conform.VerifyReport(cfg.Require.Report, cfg.Require.Conformance, c.Pin(), c.Ports(), suites)
 		if err != nil && f.Mode == ModeProduction {
 			_ = p.Close()
 			return nil, fmt.Errorf("plugin %s: %w", cfg.Name, err)
