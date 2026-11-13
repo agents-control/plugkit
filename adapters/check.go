@@ -148,6 +148,9 @@ func Check(spec Spec, f File) Findings {
 		for _, msg := range literalSecrets("", port.Config) {
 			add(LevelError, where, "%s", msg)
 		}
+		for _, msg := range builtinConfig(ps, port) {
+			add(LevelError, where, "%s", msg)
+		}
 	}
 	for _, p := range f.Plugins {
 		for _, name := range p.Ports {
@@ -157,6 +160,45 @@ func Check(spec Spec, f File) Findings {
 		}
 	}
 	return fs
+}
+
+func builtinConfig(ps PortSpec, port Port) []string {
+	declared := map[string]ConfigKind{}
+	plugin := false
+	for _, s := range port.Use {
+		plugin = plugin || strings.HasPrefix(s, TierPlugin+":")
+		maps.Copy(declared, ps.BuiltinConfig[s])
+	}
+	var out []string
+	for _, k := range slices.Sorted(maps.Keys(port.Config)) {
+		kind, ok := declared[k]
+		if !ok {
+			if !plugin {
+				out = append(out, fmt.Sprintf("%s does not accept config key %q", strings.Join(port.Use, ", "), k))
+			}
+			continue
+		}
+		v := port.Config[k]
+		var valid bool
+		switch kind {
+		case ConfigRef:
+			s, isString := v.(string)
+			valid = isString && host.IsRef(s)
+		case ConfigString:
+			_, valid = v.(string)
+		case ConfigBool:
+			_, valid = v.(bool)
+		case ConfigNumber:
+			switch v.(type) {
+			case int, int64, uint64, float64:
+				valid = true
+			}
+		}
+		if !valid {
+			out = append(out, fmt.Sprintf("config %s must be a %s", k, kind))
+		}
+	}
+	return out
 }
 
 func literalSecrets(path string, cfg map[string]any) []string {

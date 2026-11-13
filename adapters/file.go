@@ -39,18 +39,31 @@ type Spec struct {
 
 // PortSpec says which selections a port accepts and how a change to it is judged.
 // Stateful changes need a data migration; Sensitive ports weaken when served by a plugin or by a Weak built-in.
+// BuiltinConfig lists, per "builtin:<name>", the config keys it accepts; any other key on a built-in-only port is an error.
 type PortSpec struct {
-	Default      []string
-	Builtins     []string
-	Memory       bool
-	Plugin       bool
-	Multi        bool
-	Stateful     bool
-	Sensitive    bool
-	Weak         []string
-	Aliases      []string
-	Capabilities map[string][]string
+	Default       []string
+	Builtins      []string
+	Memory        bool
+	Plugin        bool
+	Multi         bool
+	Stateful      bool
+	Sensitive     bool
+	Weak          []string
+	Aliases       []string
+	Capabilities  map[string][]string
+	BuiltinConfig map[string]map[string]ConfigKind
 }
+
+// ConfigKind is the value type a built-in config key accepts.
+type ConfigKind string
+
+// Config kinds; ConfigRef values must be references such as env:NAME.
+const (
+	ConfigRef    ConfigKind = "ref"
+	ConfigString ConfigKind = "string"
+	ConfigBool   ConfigKind = "bool"
+	ConfigNumber ConfigKind = "number"
+)
 
 // File is the adapters.yaml document, or the same desired state built from the env form.
 type File struct {
