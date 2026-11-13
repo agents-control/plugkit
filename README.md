@@ -12,6 +12,7 @@ The shared plug layer of the agents.control engines. Every engine port can be se
 | `discovery` | the `GET /v1/adapters` document, handler and fetch |
 | `conform` | runner, `acplug.conform/1` report, `Verify`, embeddable CLI; `conform/corpus` broken plugins |
 | `outbox`, `outbox/sinktest` | batch `Sink` port, its plugin adapter, the Standard Webhooks `WebhookSink`, `ParseKey`/`Verify`, and the suite |
+| `usage` | `Annotate`: the neutral `x-usage` annotations of an event schema (MT-ADR-010) from `usage:"…"` struct tags, for every engine's schema generator |
 | `serve` | helpers to write a Go plugin |
 | `cmd/conform` | the conformance binary: no Go needed on the plugin side |
 | `examples/python-sink` | a stdlib Python sink plugin that passes `conform` |
