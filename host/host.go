@@ -117,7 +117,7 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 		if err := validateSettings(p, c.cfg.Settings[p.GetPort()]); err != nil {
 			return err
 		}
-		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p)}
+		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p), metadata: p.GetMetadata()}
 	}
 	if err := h.requireCapabilities(c); err != nil {
 		return err

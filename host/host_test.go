@@ -508,3 +508,15 @@ func TestStreamIdleDisabled(t *testing.T) {
 		t.Fatalf("a disabled idle timeout must leave the stream to the caller's context, got %v", err)
 	}
 }
+
+func TestPortMetadata(t *testing.T) {
+	m := serve.SinkManifest("ref")
+	m.Ports[0].Metadata = map[string]string{"media_type": "application/json", "description": "events"}
+	c := dial(t, &host.Host{}, plain(start(t, serve.NewPlugin(m), &serve.MemorySink{})))
+	if got := c.Metadata("sink"); got["media_type"] != "application/json" || got["description"] != "events" {
+		t.Fatalf("metadata = %v", got)
+	}
+	if c.Metadata("transport") != nil {
+		t.Fatal("a port that is not enabled has no metadata")
+	}
+}

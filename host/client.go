@@ -37,6 +37,7 @@ type Status struct {
 type enabledPort struct {
 	conn         *portConn
 	capabilities []string
+	metadata     map[string]string
 }
 
 // Client is a dialed, negotiated and pinned plugin; Port hands out guarded connections for engine adapters.
@@ -85,6 +86,14 @@ func (c *Client) Port(name string) (grpc.ClientConnInterface, error) {
 func (c *Client) Capabilities(name string) []string {
 	if p, ok := c.ports[name]; ok {
 		return slices.Clone(p.capabilities)
+	}
+	return nil
+}
+
+// Metadata returns a copy of the descriptive metadata an enabled port declares, nil when the port is not enabled.
+func (c *Client) Metadata(name string) map[string]string {
+	if p, ok := c.ports[name]; ok {
+		return maps.Clone(p.metadata)
 	}
 	return nil
 }
