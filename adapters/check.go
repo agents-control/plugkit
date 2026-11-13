@@ -224,8 +224,8 @@ func literalSecrets(path string, v any) []string {
 		}
 	case string:
 		k, _, _ := strings.Cut(path[strings.LastIndex(path, ".")+1:], "[")
-		if embedsCredentials(v) {
-			out = append(out, fmt.Sprintf("%s embeds credentials in a URL; use a Ref key with a reference", path))
+		if embedsCredentials(v) || credentialValue.MatchString(v) {
+			out = append(out, fmt.Sprintf("%s embeds credentials; use a Ref key with a reference", path))
 		}
 		isRef := strings.HasSuffix(k, "Ref")
 		if isRef && !host.IsRef(v) {

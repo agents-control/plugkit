@@ -10,6 +10,7 @@ import (
 )
 
 // ValidateJSON checks instance against a JSON Schema (draft 2020-12 by default) without loading remote references.
+// A nil instance only compiles the schema.
 func ValidateJSON(schema, instance []byte) error {
 	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
 	if err != nil {
@@ -24,6 +25,9 @@ func ValidateJSON(schema, instance []byte) error {
 	sch, err := c.Compile("mem://config.json")
 	if err != nil {
 		return fmt.Errorf("invalid schema: %w", err)
+	}
+	if instance == nil {
+		return nil
 	}
 	v, err := jsonschema.UnmarshalJSON(bytes.NewReader(instance))
 	if err != nil {

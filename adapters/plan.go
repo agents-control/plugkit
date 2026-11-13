@@ -8,14 +8,15 @@ import (
 	"github.com/agents-control/plugkit/host"
 )
 
-// Change is the diff of one port between the running engine and the desired state.
-// Port "mode" carries the engine mode, "acknowledge" the opt-ins and "extensions.<key>" one extension's shown JSON.
+// Change is one diff of a port, "mode", "acknowledge" or "extensions.<key>" (its shown JSON) against the running engine;
+// Notes are non-weakening remarks such as a rotated credential reference, never its value.
 type Change struct {
 	Port                  string   `json:"port"`
 	From                  []string `json:"from"`
 	To                    []string `json:"to"`
 	Weakening             []string `json:"weakening,omitempty"`
 	DataMigrationRequired bool     `json:"data_migration_required,omitempty"`
+	Notes                 []string `json:"notes,omitempty"`
 }
 
 // Plan is the reviewable diff; apply is a restart with the desired file, and the engine never migrates data between stores.

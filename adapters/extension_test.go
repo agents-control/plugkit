@@ -95,9 +95,65 @@ func TestExtensionDiscoveryIsProjectedAndRedacted(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := (&adapters.Plugins{}).Describe(s, f, "b")
-	want := `{"sources":[{"accept":["test.suite.requested"],"name":"ci","secretRef":"redacted","trust":"reported"}]}`
-	if got := string(d.Extensions["inbox"]); got != want {
-		t.Fatalf("discovery = %s, want %s", got, want)
+	got := string(d.Extensions["inbox"])
+	if !strings.HasPrefix(got, `{"sources":[{"accept":["test.suite.requested"],"name":"ci","secretRef":"redacted:`) || strings.Contains(got, "CI_SECRET") || strings.Contains(got, "t1") {
+		t.Fatalf("discovery = %s", got)
+	}
+}
+
+func TestExtensionDiscoveryRefusesExposedSecrets(t *testing.T) {
+	s := spec
+	s.Extensions = map[string]adapters.Extension{"raw": {
+		Schema:    json.RawMessage(`{}`),
+		Discover:  func(raw json.RawMessage) any { return raw },
+		Weakening: func(_, _ json.RawMessage) []string { return nil },
+	}}
+	cases := map[string]string{
+		"nested password":      "auth: {pass: hunter2}",
+		"dsn with password":    "conn: 'host=db password=hunter2'",
+		"signing key":          "signingKey: c2VjcmV0",
+		"authorization header": "headers: {Authorization: 'Bearer abc'}",
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			f, err := adapters.Load(s, []byte(extHead+"extensions: {raw: {"+body+"}}\n"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := adapters.Check(s, f).Err(); err == nil || !strings.Contains(err.Error(), "exposes") {
+				t.Fatalf("check = %v", err)
+			}
+			if d := (&adapters.Plugins{}).Describe(s, f, "b"); d.Extensions != nil {
+				t.Fatalf("discovery shows %s", d.Extensions["raw"])
+			}
+		})
+	}
+}
+
+func TestExtensionSpecIsCheckedAtBoot(t *testing.T) {
+	s := spec
+	s.Extensions = map[string]adapters.Extension{
+		"bad":     {Schema: json.RawMessage(`{"type": 7}`), Discover: func(r json.RawMessage) any { return r }, Weakening: func(_, _ json.RawMessage) []string { return nil }},
+		"partial": {Schema: json.RawMessage(`{}`)},
+	}
+	err := adapters.Check(s, load(t, extHead)).Err()
+	if err == nil || !strings.Contains(err.Error(), "spec extensions.bad: invalid schema") || !strings.Contains(err.Error(), "spec extensions.partial: an extension needs Discover and Weakening") {
+		t.Fatalf("check = %v", err)
+	}
+}
+
+func TestExtensionPlanNotesRotatedReference(t *testing.T) {
+	s := extSpec()
+	running := load(t, extHead+"extensions:\n inbox:\n  sources:\n"+ciSource)
+	current := (&adapters.Plugins{}).Describe(s, running, "b")
+	desired := load(t, extHead+"extensions:\n inbox:\n  sources:\n"+strings.Replace(ciSource, "CI_SECRET", "CI_SECRET_V2", 1))
+	p := adapters.Diff(s, desired, current)
+	i := slices.IndexFunc(p.Changes, func(c adapters.Change) bool { return c.Port == "extensions.inbox" })
+	if i < 0 || p.Weakening() || !slices.Equal(p.Changes[i].Notes, []string{"credential reference changed at sources[0].secretRef"}) {
+		t.Fatalf("plan = %+v", p)
+	}
+	if out, _ := json.Marshal(p); strings.Contains(string(out), "CI_SECRET") {
+		t.Fatalf("plan reveals the reference: %s", out)
 	}
 }
 

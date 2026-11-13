@@ -1,10 +1,14 @@
 package adapters
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -14,16 +18,21 @@ import (
 	"github.com/agents-control/plugkit/host"
 )
 
-// Extension declares the engine section extensions.<key> of the adapters file; Check validates it against Schema.
-// Discover narrows what GET /v1/adapters shows, always redacted; Weakening judges a change of that shown value in plan.
+// Extension declares the engine section extensions.<key>; Schema, Discover and Weakening are all required.
+// Discover returns what GET /v1/adapters shows (refused if it exposes a secret); Weakening judges two such projections.
 type Extension struct {
 	Schema    json.RawMessage
 	Discover  func(json.RawMessage) any
 	Weakening func(from, to json.RawMessage) []string
 }
 
-// Redacted replaces, in discovery, every value whose key ends in Ref or looks like a secret.
-const Redacted = "redacted"
+// Redacted prefixes the digest shown in discovery in place of every *Ref value.
+const Redacted = "redacted:"
+
+var (
+	disclosing      = regexp.MustCompile(`(?i)(pass|auth|signing|dsn|cookie|session|key$)`)
+	credentialValue = regexp.MustCompile(`(?i)(\bpassword=|\bpwd=|\bbearer\s|\bbasic\s)`)
+)
 
 // Extension decodes extensions.<key> into v with JSON tags; an absent section leaves v untouched.
 func (f File) Extension(key string, v any) error {
@@ -72,6 +81,16 @@ func loadExtensions(spec Spec, f *File, env map[string]string) error {
 
 func checkExtensions(spec Spec, f File) Findings {
 	var fs Findings
+	for _, key := range slices.Sorted(maps.Keys(spec.Extensions)) {
+		ext := spec.Extensions[key]
+		err := host.ValidateJSON(ext.Schema, nil)
+		if ext.Discover == nil || ext.Weakening == nil {
+			err = errors.Join(err, errors.New("an extension needs Discover and Weakening"))
+		}
+		if err != nil {
+			fs = append(fs, Finding{LevelError, "spec extensions." + key, err.Error()})
+		}
+	}
 	for _, key := range slices.Sorted(maps.Keys(f.Extensions)) {
 		where := "extensions." + key
 		ext, ok := spec.Extensions[key]
@@ -97,35 +116,70 @@ func checkExtensions(spec Spec, f File) Findings {
 }
 
 func project(ext Extension, v any) (json.RawMessage, error) {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
+	if ext.Discover == nil {
+		return nil, errors.New("no Discover projection")
 	}
-	if ext.Discover != nil {
-		if raw, err = json.Marshal(ext.Discover(raw)); err != nil {
-			return nil, fmt.Errorf("discovery projection: %w", err)
-		}
+	raw, err := json.Marshal(v)
+	if err == nil {
+		raw, err = json.Marshal(ext.Discover(raw))
 	}
 	var generic any
-	if err := json.Unmarshal(raw, &generic); err != nil {
-		return nil, err
+	if err == nil {
+		err = json.Unmarshal(raw, &generic)
 	}
-	return json.Marshal(redact(generic))
+	if err != nil {
+		return nil, fmt.Errorf("discovery projection: %w", err)
+	}
+	if bad := exposures("", generic); len(bad) > 0 {
+		return nil, fmt.Errorf("discovery projection exposes %s; leave secrets out of Discover", strings.Join(bad, ", "))
+	}
+	return json.Marshal(redactRefs(generic))
 }
 
-func redact(v any) any {
+func exposures(path string, v any) []string {
+	var out []string
 	switch v := v.(type) {
 	case map[string]any:
-		for k, e := range v {
-			if strings.HasSuffix(k, "Ref") || secretKey.MatchString(k) {
-				v[k] = Redacted
-			} else {
-				v[k] = redact(e)
+		for _, k := range slices.Sorted(maps.Keys(v)) {
+			p := strings.TrimPrefix(path+"."+k, ".")
+			s, isString := v[k].(string)
+			switch {
+			case strings.HasSuffix(k, "Ref"):
+				if !isString || !host.IsRef(s) {
+					out = append(out, p)
+				}
+			case secretKey.MatchString(k) || disclosing.MatchString(k):
+				out = append(out, p)
+			default:
+				out = append(out, exposures(p, v[k])...)
 			}
 		}
 	case []any:
 		for i, e := range v {
-			v[i] = redact(e)
+			out = append(out, exposures(fmt.Sprintf("%s[%d]", path, i), e)...)
+		}
+	case string:
+		if credentialValue.MatchString(v) || embedsCredentials(v) {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func redactRefs(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		for k, e := range v {
+			if s, ok := e.(string); ok && strings.HasSuffix(k, "Ref") {
+				sum := sha256.Sum256([]byte(s))
+				v[k] = Redacted + hex.EncodeToString(sum[:4])
+			} else {
+				v[k] = redactRefs(e)
+			}
+		}
+	case []any:
+		for i, e := range v {
+			v[i] = redactRefs(e)
 		}
 	}
 	return v
@@ -134,10 +188,8 @@ func redact(v any) any {
 func describeExtensions(spec Spec, f File) map[string]json.RawMessage {
 	out := map[string]json.RawMessage{}
 	for key, v := range f.Extensions {
-		if ext, ok := spec.Extensions[key]; ok {
-			if raw, err := project(ext, v); err == nil {
-				out[key] = raw
-			}
+		if raw, err := project(spec.Extensions[key], v); err == nil {
+			out[key] = raw
 		}
 	}
 	if len(out) == 0 {
@@ -149,20 +201,58 @@ func describeExtensions(spec Spec, f File) map[string]json.RawMessage {
 func diffExtensions(spec Spec, desired File, current discovery.Document) []Change {
 	var out []Change
 	for _, key := range slices.Sorted(maps.Keys(spec.Extensions)) {
-		ext := spec.Extensions[key]
+		ext, port := spec.Extensions[key], "extensions."+key
 		var to json.RawMessage
 		if v, ok := desired.Extensions[key]; ok {
-			to, _ = project(ext, v)
+			var err error
+			if to, err = project(ext, v); err != nil {
+				out = append(out, Change{Port: port, Weakening: []string{err.Error()}})
+				continue
+			}
 		}
 		from := current.Extensions[key]
-		if bytes.Equal(from, to) {
+		before, after := decode(from), decode(to)
+		if reflect.DeepEqual(before, after) {
 			continue
 		}
-		c := Change{Port: "extensions." + key, From: rawList(from), To: rawList(to)}
-		if ext.Weakening != nil {
+		c := Change{Port: port, From: rawList(from), To: rawList(to), Notes: refChanges("", before, after)}
+		if ext.Weakening == nil {
+			c.Weakening = []string{"extension " + key + " changed; no classifier"}
+		} else {
 			c.Weakening = ext.Weakening(from, to)
 		}
 		out = append(out, c)
+	}
+	return out
+}
+
+func decode(raw json.RawMessage) any {
+	var v any
+	if raw != nil && json.Unmarshal(raw, &v) != nil {
+		return string(raw)
+	}
+	return v
+}
+
+func refChanges(path string, a, b any) []string {
+	var out []string
+	switch a := a.(type) {
+	case map[string]any:
+		if b, ok := b.(map[string]any); ok {
+			for _, k := range slices.Sorted(maps.Keys(a)) {
+				out = append(out, refChanges(strings.TrimPrefix(path+"."+k, "."), a[k], b[k])...)
+			}
+		}
+	case []any:
+		if b, ok := b.([]any); ok {
+			for i := range min(len(a), len(b)) {
+				out = append(out, refChanges(fmt.Sprintf("%s[%d]", path, i), a[i], b[i])...)
+			}
+		}
+	case string:
+		if b, ok := b.(string); ok && a != b && strings.HasPrefix(a, Redacted) && strings.HasPrefix(b, Redacted) {
+			out = append(out, "credential reference changed at "+path)
+		}
 	}
 	return out
 }
