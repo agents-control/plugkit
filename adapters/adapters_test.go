@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -335,5 +336,31 @@ func TestEnvHelpers(t *testing.T) {
 	}
 	if _, ok := f.First("cache"); ok {
 		t.Fatal("unknown port has no first use")
+	}
+}
+
+func TestPlanAgainstAuthenticatedEngine(t *testing.T) {
+	doc := discovery.Handler(func() discovery.Document { return discovery.Document{Engine: "example-engine", Mode: "production"} })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer op-token" || r.Header.Get("X-Tenant") != "ops" {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		doc.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("EX_OP_TOKEN", "op-token")
+	t.Setenv("EX_TENANT", "ops")
+	var out, errOut bytes.Buffer
+	args := []string{"plan", "--against", srv.URL}
+	if code := adapters.Main(spec, args, nil, &out, &errOut); code != 1 {
+		t.Fatalf("unauthenticated plan = %d", code)
+	}
+	args = append(args, "--token", "env:EX_OP_TOKEN", "--header", "X-Tenant=env:EX_TENANT")
+	if code := adapters.Main(spec, args, nil, &out, &errOut); code != 0 {
+		t.Fatalf("authenticated plan = %d: %s", code, errOut.String())
+	}
+	if code := adapters.Main(spec, []string{"plan", "--against", srv.URL, "--token", "op-token"}, nil, &out, &errOut); code != 2 {
+		t.Fatalf("a literal token must be refused, got %d", code)
 	}
 }

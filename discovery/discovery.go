@@ -65,11 +65,25 @@ func Handler(doc func() Document) http.Handler {
 	})
 }
 
+// Option adjusts the Fetch request, typically to authenticate against an operator-only endpoint.
+type Option func(*http.Request)
+
+// WithHeader sets one request header.
+func WithHeader(name, value string) Option {
+	return func(r *http.Request) { r.Header.Set(name, value) }
+}
+
+// WithBearer sends Authorization: Bearer token.
+func WithBearer(token string) Option { return WithHeader("Authorization", "Bearer "+token) }
+
 // Fetch reads the document from a running engine at base, for example http://127.0.0.1:8080.
-func Fetch(ctx context.Context, client *http.Client, base string) (Document, error) {
+func Fetch(ctx context.Context, client *http.Client, base string, opts ...Option) (Document, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+Path, nil)
 	if err != nil {
 		return Document{}, err
+	}
+	for _, o := range opts {
+		o(req)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
