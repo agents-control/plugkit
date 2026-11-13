@@ -45,18 +45,20 @@ type Legacy struct {
 }
 
 // Host is the engine side of acplug/1: what it speaks, how it resolves credentials and the ceilings it imposes.
-// Zero values pick defaults: protocol acplug/1, a 10 s deadline, 64 calls in flight and 4 MiB messages per port.
+// Zero values pick defaults: acplug/1, 10 s unary deadline, 60 s stream idle (negative disables), 64 in flight, 4 MiB.
 type Host struct {
-	Engine          string
-	Version         string
-	Protocols       []string
-	Secrets         SecretResolver
-	Supported       map[string][]string
-	Deadlines       map[string]time.Duration
-	DefaultDeadline time.Duration
-	MaxInFlight     int
-	MaxMessageBytes int
-	Legacy          []Legacy
+	Engine            string
+	Version           string
+	Protocols         []string
+	Secrets           SecretResolver
+	Supported         map[string][]string
+	Deadlines         map[string]time.Duration
+	DefaultDeadline   time.Duration
+	StreamIdle        map[string]time.Duration
+	DefaultStreamIdle time.Duration
+	MaxInFlight       int
+	MaxMessageBytes   int
+	Legacy            []Legacy
 }
 
 // Dial connects to the plugin, negotiates the manifest, validates the port settings, requires SERVING and pins the manifest.
@@ -245,7 +247,14 @@ func (h *Host) guard(cc grpc.ClientConnInterface, p *acplugv1.ProvidedPort) *por
 	if n := int(l.GetMaxMessageBytes()); n > 0 && n < maxBytes {
 		maxBytes = n
 	}
-	return &portConn{cc: cc, deadline: deadline, slots: make(chan struct{}, inFlight), maxBytes: maxBytes}
+	idle := h.DefaultStreamIdle
+	if d, ok := h.StreamIdle[p.GetPort()]; ok {
+		idle = d
+	}
+	if idle == 0 {
+		idle = time.Minute
+	}
+	return &portConn{cc: cc, deadline: deadline, idle: idle, slots: make(chan struct{}, inFlight), maxBytes: maxBytes}
 }
 
 func (h *Host) protocols() []string {

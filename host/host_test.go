@@ -429,3 +429,82 @@ func TestRecheckSendsHostIdentity(t *testing.T) {
 		t.Fatalf("recheck manifest request = %v", p.last)
 	}
 }
+
+func silentStreamServer(t *testing.T, limits *acplugv1.Limits) string {
+	t.Helper()
+	schema, _ := structpb.NewValue(true)
+	m := serve.SinkManifest("watch")
+	m.Ports = []*acplugv1.ProvidedPort{{Port: "watch", ConfigSchema: schema, Limits: limits}}
+	desc := grpc.ServiceDesc{ServiceName: "test.v1.Watch", HandlerType: (*any)(nil), Streams: []grpc.StreamDesc{{
+		StreamName: "Watch", ServerStreams: true,
+		Handler: func(_ any, s grpc.ServerStream) error {
+			if err := s.RecvMsg(&acplugv1.HealthRequest{}); err != nil {
+				return err
+			}
+			<-s.Context().Done()
+			return nil
+		},
+	}}}
+	addr, stop, err := serve.Start(func(s *grpc.Server) {
+		acplugv1.RegisterPluginServer(s, serve.NewPlugin(m))
+		s.RegisterService(&desc, struct{}{})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	return addr
+}
+
+func openWatch(ctx context.Context, cc grpc.ClientConnInterface) (grpc.ClientStream, error) {
+	s, err := cc.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true}, "/test.v1.Watch/Watch")
+	if err != nil {
+		return nil, err
+	}
+	if err := s.SendMsg(&acplugv1.HealthRequest{}); err != nil {
+		return nil, err
+	}
+	return s, s.CloseSend()
+}
+
+func TestStreamIdleTimeoutAndBulkhead(t *testing.T) {
+	addr := silentStreamServer(t, &acplugv1.Limits{MaxInFlight: 1})
+	c := dial(t, &host.Host{StreamIdle: map[string]time.Duration{"watch": 200 * time.Millisecond}}, plain(addr))
+	cc, _ := c.Port("watch")
+	first, err := openWatch(context.Background(), cc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := openWatch(t.Context(), cc); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("second stream = %v, want RESOURCE_EXHAUSTED from the bulkhead", err)
+	}
+	start := time.Now()
+	if err := first.RecvMsg(&acplugv1.HealthResponse{}); status.Code(err) != codes.DeadlineExceeded || time.Since(start) > 5*time.Second {
+		t.Fatalf("silent stream = %v after %s, want DEADLINE_EXCEEDED after the idle timeout", err, time.Since(start))
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	again, err := openWatch(ctx, cc)
+	if err != nil {
+		t.Fatalf("slot must be released after the idle timeout: %v", err)
+	}
+	cancel()
+	_ = again.RecvMsg(&acplugv1.HealthResponse{})
+	if _, err := openWatch(t.Context(), cc); err != nil {
+		t.Fatalf("slot must be released after cancellation: %v", err)
+	}
+}
+
+func TestStreamIdleDisabled(t *testing.T) {
+	addr := silentStreamServer(t, nil)
+	c := dial(t, &host.Host{DefaultStreamIdle: 50 * time.Millisecond, StreamIdle: map[string]time.Duration{"watch": -1}}, plain(addr))
+	cc, _ := c.Port("watch")
+	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+	defer cancel()
+	s, err := openWatch(ctx, cc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecvMsg(&acplugv1.HealthResponse{}); status.Code(err) != codes.DeadlineExceeded || ctx.Err() == nil {
+		t.Fatalf("a disabled idle timeout must leave the stream to the caller's context, got %v", err)
+	}
+}
