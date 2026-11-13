@@ -40,11 +40,15 @@ type Sink interface {
 var coreAttributes = []string{"id", "source", "specversion", "type", "subject", "time", "datacontenttype", "dataschema", "data", "tenant", "workspace"}
 
 // MarshalJSON encodes CloudEvents JSON: Extensions become top-level attributes with their types kept and never shadow a core one.
-// Core attributes except data are always emitted, as every engine does today.
+// Optional attributes (subject, datacontenttype, dataschema, data) are omitted when empty; tenant and workspace always go out.
 func (e Event) MarshalJSON() ([]byte, error) {
-	m := map[string]any{"id": e.ID, "source": e.Source, "specversion": e.SpecVersion, "type": e.Type, "subject": e.Subject,
-		"time": e.Time.UTC().Format(time.RFC3339Nano), "datacontenttype": e.DataContentType, "dataschema": e.DataSchema,
-		"tenant": e.Tenant, "workspace": e.Workspace}
+	m := map[string]any{"id": e.ID, "source": e.Source, "specversion": e.SpecVersion, "type": e.Type,
+		"time": e.Time.UTC().Format(time.RFC3339Nano), "tenant": e.Tenant, "workspace": e.Workspace}
+	for k, v := range map[string]string{"subject": e.Subject, "datacontenttype": e.DataContentType, "dataschema": e.DataSchema} {
+		if v != "" {
+			m[k] = v
+		}
+	}
 	if len(e.Data) > 0 {
 		m["data"] = e.Data
 	}
@@ -56,7 +60,7 @@ func (e Event) MarshalJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// UnmarshalJSON decodes CloudEvents JSON; unknown attributes land in Extensions, numbers as json.Number.
+// UnmarshalJSON decodes CloudEvents JSON; unknown attributes, data_base64 included, land in Extensions, numbers as json.Number.
 func (e *Event) UnmarshalJSON(b []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {

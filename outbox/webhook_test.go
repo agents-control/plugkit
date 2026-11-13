@@ -267,3 +267,17 @@ func TestEventJSONRoundTripKeepsTypes(t *testing.T) {
 		t.Fatalf("extensions %v", out.Extensions)
 	}
 }
+
+func TestEmptyOptionalAttributesAreOmitted(t *testing.T) {
+	b, _ := json.Marshal(Event{ID: "e", Source: "s", SpecVersion: "1.0", Type: "t", Time: time.Unix(1, 0), Tenant: "acme"})
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	for _, k := range []string{"subject", "datacontenttype", "dataschema", "data"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("%s emitted empty: %s", k, b)
+		}
+	}
+	if _, ok := m["workspace"]; !ok || m["tenant"] != "acme" {
+		t.Fatalf("tenant and workspace must always go out: %s", b)
+	}
+}
