@@ -67,6 +67,9 @@ func Main(spec Spec, args []string, environ []string, stdout, stderr io.Writer) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	opts, err := fetchAuth(ctx, *token, headers)
+	if err == nil && len(opts) > 0 && (host.Config{Endpoint: *against, TLS: host.TLS{Insecure: !strings.HasPrefix(*against, "https://")}}).Plaintext() {
+		err = fmt.Errorf("credentials would travel in plaintext to %s; use https:// or a loopback address", *against)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2

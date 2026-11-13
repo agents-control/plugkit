@@ -376,3 +376,17 @@ func TestDiffLeavesEmbeddedPortsToTheEmbedder(t *testing.T) {
 		t.Fatalf("an embedded port is not plannable from the file: %+v", p)
 	}
 }
+
+func TestPlanRefusesCredentialsOverPlaintext(t *testing.T) {
+	t.Setenv("EX_OP_TOKEN", "op-token")
+	var out, errOut bytes.Buffer
+	for _, args := range [][]string{
+		{"plan", "--against", "http://engine.internal:8080", "--token", "env:EX_OP_TOKEN"},
+		{"plan", "--against", "http://10.0.0.9:8080", "--header", "X-Key=env:EX_OP_TOKEN"},
+	} {
+		errOut.Reset()
+		if code := adapters.Main(spec, args, nil, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "plaintext") {
+			t.Fatalf("%v = %d: %s", args, code, errOut.String())
+		}
+	}
+}
