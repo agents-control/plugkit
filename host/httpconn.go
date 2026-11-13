@@ -158,8 +158,9 @@ type httpStream struct {
 	conn   *httpConn
 	method string
 
-	mu       sync.Mutex
-	req      proto.Message
+	mu  sync.Mutex
+	req proto.Message
+
 	body     io.ReadCloser
 	scan     *bufio.Reader
 	raw      protoreflect.FieldDescriptor
@@ -183,18 +184,18 @@ func (s *httpStream) SendMsg(m any) error {
 	return nil
 }
 
-func (s *httpStream) open(reply proto.Message) error {
-	if s.req == nil {
+func (s *httpStream) open(req, reply proto.Message) error {
+	if req == nil {
 		return status.Error(codes.Internal, "RecvMsg before SendMsg")
 	}
 	s.raw = bytesField(reply)
 	var resp *http.Response
 	var err error
 	if s.raw == nil {
-		resp, err = s.conn.request(s.ctx, s.method, s.req)
+		resp, err = s.conn.request(s.ctx, s.method, req)
 	} else {
 		var hdr string
-		if hdr, err = encodeMessage(s.req); err == nil {
+		if hdr, err = encodeMessage(req); err == nil {
 			resp, err = s.conn.send(s.ctx, http.MethodGet, s.method, nil, http.Header{MessageHeader: {hdr}})
 		}
 	}
@@ -216,10 +217,11 @@ func (s *httpStream) RecvMsg(m any) error {
 	if !ok {
 		return status.Error(codes.Internal, "reply is not a protobuf message")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.body == nil {
-		if err := s.open(out); err != nil {
+		s.mu.Lock()
+		req := s.req
+		s.mu.Unlock()
+		if err := s.open(req, out); err != nil {
 			s.cancel()
 			return err
 		}
