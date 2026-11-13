@@ -19,13 +19,19 @@ For call-out ports, and unary methods of any port:
 
 - `POST {endpoint}/<package>.<Service>/<Method>`, body and reply are protobuf JSON with field names as in the `.proto` (`host_protocols`, `config_schema`), enums by name. Unknown reply fields are ignored.
 - Headers: `Content-Type: application/json`, `Authorization: Bearer <token>` when a credential is configured, `Acplug-Deadline-Ms: <remaining ms>`.
-- Server streams answer `application/x-ndjson`, one message per line; blank lines are keep-alives.
+- Server streams answer `application/x-ndjson`, one message per line, each line at most the message size limit; blank lines are keep-alives.
+- **Raw-body streams** for byte payloads (blob `Put`/`Open`):
+  - A client-streaming method whose request message has exactly one singular `bytes` field is `PUT {endpoint}/<package>.<Service>/<Method>` with `Content-Type: application/octet-stream`. The first message's other fields travel in the `Acplug-Message` header as base64url (unpadded) protobuf JSON; the body is the concatenation of every message's bytes field. Later messages may carry bytes only. The reply is a JSON body as for unary calls.
+  - A server-streaming method whose reply message has exactly one singular `bytes` field is `GET {endpoint}/<package>.<Service>/<Method>` with the request in `Acplug-Message`. The body is the raw bytes, split by the host into messages of 64 KiB; an optional `Acplug-Message` response header fills the other fields of the first message.
+  - Bidirectional streams have no HTTP mapping.
 - Errors: a non-2xx status with `{"error": {"code": "<gRPC code name>", "message": "…"}}`, or the same object as a stream line. Without a body the status maps 400→INVALID_ARGUMENT, 401→UNAUTHENTICATED, 403→PERMISSION_DENIED, 404→NOT_FOUND, 429→RESOURCE_EXHAUSTED, 501→UNIMPLEMENTED, 502/503→UNAVAILABLE, 504→DEADLINE_EXCEEDED. A method a plugin does not serve answers `UNIMPLEMENTED`.
 - Redirects are not followed. Reply bodies above the message size limit fail with `RESOURCE_EXHAUSTED`.
 
 ## Limits
 
-`ProvidedPort.limits` lowers the host's ceilings for that port: `deadline_ms` (unary calls), `max_in_flight` (excess calls fail fast with `RESOURCE_EXHAUSTED`), `max_message_bytes` (both directions).
+`ProvidedPort.limits` lowers the host's ceilings for that port: `deadline_ms` (unary calls), `max_in_flight` (calls and open streams; excess fails fast with `RESOURCE_EXHAUSTED`), `max_message_bytes` (both directions). Each stream send or receive must complete within the host's idle timeout for the port (60 s by default).
+
+`ProvidedPort.metadata` carries descriptive strings such as `media_type` or `description`; capabilities stay for what the host can rely on.
 
 ## EventSink
 
