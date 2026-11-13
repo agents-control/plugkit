@@ -159,9 +159,12 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 		f.AllowMemory = allow == "true"
 	}
 	if ack, ok := env[spec.EnvPrefix+"_ACKNOWLEDGE"]; ok {
-		got := strings.Split(ack, ",")
-		if data != nil && !sameSet(got, f.Acknowledge) {
+		got := splitList(ack)
+		switch {
+		case data != nil && !sameSet(got, f.Acknowledge):
 			return File{}, fmt.Errorf("%s_ACKNOWLEDGE=%s contradicts acknowledge of the adapters file", spec.EnvPrefix, ack)
+		case data == nil && len(got) > 0 && f.Mode == ModeProduction:
+			return File{}, fmt.Errorf("%s_ACKNOWLEDGE needs an adapters file in production: acknowledgements must be reviewable", spec.EnvPrefix)
 		}
 		f.Acknowledge = got
 	}
@@ -186,6 +189,16 @@ func Load(spec Spec, data []byte, environ []string) (File, error) {
 	}
 	bindPlugins(&f)
 	return f, nil
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func sameSet(a, b []string) bool {

@@ -9,7 +9,7 @@ import (
 )
 
 // Change is the diff of one port between the running engine and the desired state.
-// Port "mode" carries a change of the engine mode.
+// Port "mode" carries a change of the engine mode and port "acknowledge" a change of the opt-ins.
 type Change struct {
 	Port                  string   `json:"port"`
 	From                  []string `json:"from"`
@@ -41,6 +41,15 @@ func Diff(spec Spec, desired File, current discovery.Document) Plan {
 		c := Change{Port: "mode", From: []string{current.Mode}, To: []string{desired.Mode}}
 		if current.Mode == ModeProduction {
 			c.Weakening = []string{"dev mode drops the production guards"}
+		}
+		p.Changes = append(p.Changes, c)
+	}
+	if !sameSet(current.Acknowledge, desired.Acknowledge) {
+		c := Change{Port: "acknowledge", From: sorted(current.Acknowledge), To: sorted(desired.Acknowledge)}
+		for _, a := range c.To {
+			if !slices.Contains(c.From, a) {
+				c.Weakening = append(c.Weakening, "acknowledges "+a)
+			}
 		}
 		p.Changes = append(p.Changes, c)
 	}

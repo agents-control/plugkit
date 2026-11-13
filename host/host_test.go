@@ -104,7 +104,7 @@ func TestHandshakeRefusals(t *testing.T) {
 		"version constraint":   {cfg: func(c *host.Config) { c.Require.Version = ">=2.0.0" }, want: "does not satisfy"},
 		"missing capability":   {cfg: func(c *host.Config) { c.Require.Capabilities = []string{"sink.ordered"} }, want: "required capability"},
 		"capability narrowed":  {h: host.Host{Supported: map[string][]string{"sink": {"other"}}}, cfg: func(c *host.Config) { c.Require.Capabilities = []string{"batch"} }, want: "required capability"},
-		"config schema":        {cfg: func(c *host.Config) { c.Settings = map[string]any{"sink": "not an object"} }, want: "config_schema"},
+		"config schema":        {cfg: func(c *host.Config) { c.Settings = map[string]any{"sink": "not an object"} }, want: "must be an object"},
 		"credential no secret": {cfg: func(c *host.Config) { c.CredentialRef = "env:X" }, want: "secret resolver"},
 	}
 	for name, tc := range cases {
@@ -579,5 +579,37 @@ func TestServeManifestBuildsPorts(t *testing.T) {
 	m := serve.Manifest("acplug/1+x/1", "n", "2.0.0", serve.Port("a", "c1"), serve.Port("b"))
 	if m.GetProtocol() != "acplug/1+x/1" || m.GetVersion() != "2.0.0" || len(m.GetPorts()) != 2 || m.GetPorts()[0].GetCapabilities()[0] != "c1" || m.GetPorts()[1].GetConfigSchema() == nil {
 		t.Fatalf("manifest = %v", m)
+	}
+}
+
+func TestNegotiatedProtocolPerPort(t *testing.T) {
+	m := serve.Manifest(host.ProtocolID, "multi", "1.0.0", serve.Port("sink"), serve.Port("plain"))
+	m.Ports[0].Protocols = []string{"acplug/1+b/1", "acplug/1+a/1", "acplug/1+legacy/1"}
+	c := dial(t, &host.Host{Protocols: []string{host.ProtocolID, "acplug/1+a/1", "acplug/1+b/1"}}, plain(start(t, serve.NewPlugin(m), &serve.MemorySink{})))
+	if c.Protocol("sink") != "acplug/1+a/1" || c.Protocol("plain") != host.ProtocolID || c.Protocol("missing") != "" {
+		t.Fatalf("protocols = %q %q", c.Protocol("sink"), c.Protocol("plain"))
+	}
+}
+
+func TestLegacyProtocolIdIsNotAPerPortProtocol(t *testing.T) {
+	m := serve.Manifest(host.ProtocolID, "multi", "1.0.0", serve.Port("sink"))
+	m.Ports[0].Protocols = []string{"acplug/1+old/1"}
+	h := &host.Host{Legacy: []host.Legacy{{Protocol: "acplug/1+old/1", Service: "old.v1.Plugin"}}}
+	if _, err := h.Dial(t.Context(), plain(start(t, serve.NewPlugin(m), &serve.MemorySink{}))); err == nil || !strings.Contains(err.Error(), "no port speaks") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHandshakeRefusesNoSpeakingPortAndDuplicates(t *testing.T) {
+	foreign := serve.Manifest(host.ProtocolID, "p", "1.0.0", serve.Port("sink"))
+	foreign.Ports[0].Protocols = []string{"acplug/1+other/1"}
+	dup := serve.Manifest(host.ProtocolID, "p", "1.0.0", serve.Port("sink"), serve.Port("sink"))
+	for name, tc := range map[string]struct {
+		m    *acplugv1.ManifestResponse
+		want string
+	}{"no port speaks": {foreign, "no port speaks"}, "duplicate port": {dup, "twice"}} {
+		if _, err := (&host.Host{}).Dial(t.Context(), plain(start(t, serve.NewPlugin(tc.m), &serve.MemorySink{}))); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v", name, err)
+		}
 	}
 }

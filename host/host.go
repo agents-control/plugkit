@@ -106,20 +106,21 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 	if err != nil {
 		return err
 	}
-	if err := h.accept(m, c.cfg); err != nil {
+	if err := h.accept(m, c.cfg, c.legacy); err != nil {
 		return err
 	}
 	c.manifest = m
 	c.pin = Pin{Name: m.GetName(), Version: m.GetVersion(), Protocol: m.GetProtocol(), Digest: Digest(m)}
 	c.ports = map[string]*enabledPort{}
 	for _, p := range m.GetPorts() {
-		if !h.enables(c.cfg, p) {
+		protocol, ok := h.negotiate(p, m.GetProtocol(), c.legacy)
+		if !ok || !c.cfg.allows(p.GetPort()) {
 			continue
 		}
 		if err := validateSettings(p, c.cfg.Settings[p.GetPort()]); err != nil {
 			return err
 		}
-		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p), metadata: p.GetMetadata()}
+		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p), metadata: p.GetMetadata(), protocol: protocol}
 	}
 	if err := h.requireCapabilities(c); err != nil {
 		return err
@@ -169,15 +170,24 @@ func (h *Host) accepted() []string {
 	return out
 }
 
-func (h *Host) speaks(p *acplugv1.ProvidedPort) bool {
-	return len(p.GetProtocols()) == 0 || slices.ContainsFunc(p.GetProtocols(), func(id string) bool { return slices.Contains(h.accepted(), id) })
+func (h *Host) negotiate(p *acplugv1.ProvidedPort, manifestProtocol string, legacy bool) (string, bool) {
+	offered := p.GetProtocols()
+	if len(offered) == 0 {
+		offered = []string{manifestProtocol}
+	}
+	prefs := h.protocols()
+	if legacy {
+		prefs = append(prefs, manifestProtocol)
+	}
+	for _, id := range prefs {
+		if slices.Contains(offered, id) {
+			return id, true
+		}
+	}
+	return "", false
 }
 
-func (h *Host) enables(cfg Config, p *acplugv1.ProvidedPort) bool {
-	return h.speaks(p) && (len(cfg.Ports) == 0 || slices.Contains(cfg.Ports, p.GetPort()))
-}
-
-func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
+func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config, legacy bool) error {
 	accepted := h.accepted()
 	if !slices.Contains(accepted, m.GetProtocol()) {
 		return fmt.Errorf("plugin speaks %q, host speaks %s", m.GetProtocol(), strings.Join(accepted, ", "))
@@ -195,7 +205,7 @@ func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
 	if len(m.GetPorts()) == 0 {
 		return errors.New("manifest declares no ports")
 	}
-	declared := map[string]bool{}
+	declared, speaking := map[string]bool{}, false
 	for _, p := range m.GetPorts() {
 		if p.GetPort() == "" {
 			return errors.New("manifest declares a port without a name")
@@ -203,10 +213,14 @@ func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
 		if !isSchema(p.GetConfigSchema()) {
 			return fmt.Errorf("port %q declares no config_schema (a JSON Schema object or boolean)", p.GetPort())
 		}
-		if !h.speaks(p) {
-			continue
+		if _, dup := declared[p.GetPort()]; dup {
+			return fmt.Errorf("manifest declares port %q twice", p.GetPort())
 		}
-		declared[p.GetPort()] = true
+		_, speaks := h.negotiate(p, m.GetProtocol(), legacy)
+		declared[p.GetPort()], speaking = speaks, speaking || speaks
+	}
+	if !speaking {
+		return fmt.Errorf("no port speaks a host protocol (%s); the plugin must filter its ports by host_protocols", strings.Join(h.protocols(), ", "))
 	}
 	for _, want := range cfg.Ports {
 		if !declared[want] {
@@ -345,20 +359,21 @@ func settingsJSON(port string, settings any) ([]byte, error) {
 	return raw, nil
 }
 
-// portConfig delivers the object configs; other shapes are left to config_schema to refuse.
 func portConfig(cfg Config) (map[string]*structpb.Struct, error) {
 	out := map[string]*structpb.Struct{}
 	for port, settings := range cfg.Settings {
-		if len(cfg.Ports) > 0 && !slices.Contains(cfg.Ports, port) {
+		if !cfg.allows(port) {
 			continue
 		}
 		raw, err := settingsJSON(port, settings)
 		if err != nil {
 			return nil, err
 		}
-		if st := (&structpb.Struct{}); st.UnmarshalJSON(raw) == nil {
-			out[port] = st
+		st := &structpb.Struct{}
+		if err := st.UnmarshalJSON(raw); err != nil {
+			return nil, fmt.Errorf("port %q config must be an object: %w", port, err)
 		}
+		out[port] = st
 	}
 	return out, nil
 }

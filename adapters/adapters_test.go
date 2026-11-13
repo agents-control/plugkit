@@ -222,7 +222,7 @@ func TestDialVerifiesConformanceAndDescribes(t *testing.T) {
 		return "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: production\nports: {sink: {use: plugin:ref}}\nplugins: [{name: ref, endpoint: '" + addr + "', tls: {insecure: true}, require: {conformance: '" + digest + "', report: '" + path + "'}}]"
 	}
 	f := load(t, doc(report.Digest()))
-	plugins, err := adapters.Dial(t.Context(), h, f, sinktest.Suite())
+	plugins, err := adapters.Dial(t.Context(), h, spec, f, sinktest.Suite())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,19 +234,19 @@ func TestDialVerifiesConformanceAndDescribes(t *testing.T) {
 			row = r
 		}
 	}
-	if row.Status != host.StateServing || row.Conformance == nil || !row.Conformance.Passed || row.ManifestDigest == "" || row.Conformance.Suite != sinktest.Version {
+	if row.Status != host.StateServing || row.Conformance == nil || !row.Conformance.Passed || row.ManifestDigest == "" || row.Protocol != host.ProtocolID || row.Conformance.Suite != sinktest.Version {
 		t.Fatalf("row = %+v", row)
 	}
-	if _, err := adapters.Dial(context.Background(), h, load(t, doc("sha256:forged")), sinktest.Suite()); err == nil {
+	if _, err := adapters.Dial(context.Background(), h, spec, load(t, doc("sha256:forged")), sinktest.Suite()); err == nil {
 		t.Fatal("a report digest that does not match must refuse the plugin in production")
 	}
 	noReport := load(t, doc(report.Digest()))
 	noReport.Plugins[0].Require = host.Require{}
-	if p, err := adapters.Dial(context.Background(), h, noReport, sinktest.Suite()); err == nil {
+	if p, err := adapters.Dial(context.Background(), h, spec, noReport, sinktest.Suite()); err == nil {
 		_ = p.Close()
 		t.Fatal("production must refuse a plugin without a conformance report even when Check was skipped")
 	}
-	if _, err := adapters.Dial(context.Background(), h, load(t, doc(report.Digest()))); err == nil {
+	if _, err := adapters.Dial(context.Background(), h, spec, load(t, doc(report.Digest()))); err == nil {
 		t.Fatal("a report the host has no suite to check must refuse the plugin in production")
 	}
 }
@@ -433,8 +433,14 @@ func TestAcknowledgements(t *testing.T) {
 	if err := adapters.Check(s, f).Err(); err == nil || !strings.Contains(err.Error(), `unknown acknowledgement "typo"`) {
 		t.Fatalf("unknown acknowledgement: %v", err)
 	}
-	if f, err = adapters.Load(s, nil, []string{"EX_ACKNOWLEDGE=partial_store_plugin"}); err != nil || !f.Acknowledged("partial_store_plugin") {
-		t.Fatalf("env form: %+v %v", f, err)
+	if f, err = adapters.Load(s, nil, []string{"EX_MODE=dev", "EX_ACKNOWLEDGE= partial_store_plugin , "}); err != nil || !slices.Equal(f.Acknowledge, []string{"partial_store_plugin"}) {
+		t.Fatalf("env form in dev: %+v %v", f, err)
+	}
+	if _, err = adapters.Load(s, nil, []string{"EX_ACKNOWLEDGE=partial_store_plugin"}); err == nil || !strings.Contains(err.Error(), "reviewable") {
+		t.Fatalf("env-only acknowledgement in production: %v", err)
+	}
+	if f, err = adapters.Load(s, nil, []string{"EX_ACKNOWLEDGE="}); err != nil || len(f.Acknowledge) != 0 {
+		t.Fatalf("empty means none: %+v %v", f, err)
 	}
 	if _, err = adapters.Load(s, []byte(head+"acknowledge: [partial_store_plugin]\n"), []string{"EX_ACKNOWLEDGE=partial_store_plugin"}); err != nil {
 		t.Fatalf("agreeing env and file: %v", err)
@@ -444,5 +450,54 @@ func TestAcknowledgements(t *testing.T) {
 	}
 	if !slices.Contains(adapters.EnvNames(s), "EX_ACKNOWLEDGE") {
 		t.Fatal("EnvNames lacks EX_ACKNOWLEDGE")
+	}
+}
+
+func TestAcknowledgementsAreVisibleToPlanAndDescribe(t *testing.T) {
+	s := spec
+	s.Acknowledgements = []string{"partial_store_plugin"}
+	head := "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: production\n"
+	f, err := adapters.Load(s, []byte(head+"acknowledge: [partial_store_plugin]\n"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := (&adapters.Plugins{}).Describe(s, f, "b"); !slices.Equal(d.Acknowledge, []string{"partial_store_plugin"}) {
+		t.Fatalf("Describe acknowledge = %v", d.Acknowledge)
+	}
+	current := discovery.Document{Engine: "example-engine", Mode: "production"}
+	p := adapters.Diff(s, f, current)
+	var got adapters.Change
+	for _, c := range p.Changes {
+		if c.Port == "acknowledge" {
+			got = c
+		}
+	}
+	if !slices.Equal(got.To, []string{"partial_store_plugin"}) || !slices.Equal(got.Weakening, []string{"acknowledges partial_store_plugin"}) || !p.Weakening() {
+		t.Fatalf("plan = %+v", p)
+	}
+	current.Acknowledge = []string{"partial_store_plugin"}
+	for _, c := range adapters.Diff(s, f, current).Changes {
+		if c.Port == "acknowledge" {
+			t.Fatalf("unchanged acknowledgements must not be a change: %+v", c)
+		}
+	}
+}
+
+func TestDialRunsCheckAndSpecValidation(t *testing.T) {
+	s := spec
+	s.Validate = func(adapters.File) adapters.Findings {
+		return adapters.Findings{{Level: adapters.LevelError, Where: "engine", Message: "refused by the engine rule"}}
+	}
+	f := load(t, "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: dev\nports: {sink: {use: builtin:log}}")
+	if _, err := adapters.Dial(t.Context(), &host.Host{}, s, f); err == nil || !strings.Contains(err.Error(), "refused by the engine rule") {
+		t.Fatalf("Dial must run the validation hook: %v", err)
+	}
+}
+
+func TestCheckRefusesCredentialsInConfigURLs(t *testing.T) {
+	f := load(t, "apiVersion: acplug/v1\nkind: Adapters\nengine: example-engine\nmode: dev\nports: {sink: {use: plugin:p, config: {dsn: 'postgres://user:pw@db:5432/x', plain: 'https://example.com/x'}}}\nplugins: [{name: p, endpoint: '127.0.0.1:1', tls: {insecure: true}}]")
+	err := adapters.Check(spec, f).Err()
+	if err == nil || !strings.Contains(err.Error(), "config dsn embeds credentials") || strings.Contains(err.Error(), "config plain") {
+		t.Fatalf("err = %v", err)
 	}
 }

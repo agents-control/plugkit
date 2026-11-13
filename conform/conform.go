@@ -24,7 +24,7 @@ const ReportFormat = "acplug.conform/1"
 const latencySample = 20
 
 // Case is one observable check; Run returns nil when the plugin behaves as the port requires and Skip(reason) when
-// it cannot apply. A skipped case fails the report unless Optional; Timeout, when set, narrows the runner's context.
+// it cannot apply; the skip must be the sole error, a wrapped or joined one is a failure. A skipped case fails the report unless Optional; Timeout, when set, narrows the runner's context.
 type Case struct {
 	Name     string
 	Optional bool
@@ -159,11 +159,9 @@ func (r *Report) record(ctx context.Context, port string, k Case) {
 	start := time.Now()
 	err := k.Run(ctx)
 	res := Result{Port: port, Case: k.Name, Passed: err == nil, Optional: k.Optional, Millis: float64(time.Since(start).Microseconds()) / 1000}
-	var sk skipped
-	switch {
-	case errors.As(err, &sk):
+	if sk, only := err.(skipped); only {
 		res.Skipped, res.Reason = true, sk.reason
-	case err != nil:
+	} else if err != nil {
 		res.Error = err.Error()
 	}
 	r.Cases = append(r.Cases, res)

@@ -19,9 +19,12 @@ type Plugins struct {
 	conformance map[string]*discovery.Conformance
 }
 
-// Dial dials every plugin a port uses and verifies its report against suites; a missing or failed report is fatal
+// Dial refuses a file that fails Check (so boot and `adapters check` cannot disagree), dials every plugin a port uses and verifies its report against suites; a missing or failed report is fatal
 // in production and degrades the plugin in dev. One failure closes the plugins already dialed.
-func Dial(ctx context.Context, h *host.Host, f File, suites ...conform.Suite) (*Plugins, error) {
+func Dial(ctx context.Context, h *host.Host, spec Spec, f File, suites ...conform.Suite) (*Plugins, error) {
+	if err := Check(spec, f).Err(); err != nil {
+		return nil, err
+	}
 	p := &Plugins{clients: map[string]*host.Client{}, conformance: map[string]*discovery.Conformance{}}
 	for _, cfg := range f.Plugins {
 		if len(cfg.Ports) == 0 {
@@ -68,7 +71,7 @@ func (p *Plugins) Close() error {
 
 // Describe renders the GET /v1/adapters document of the bound state; a plugin without a verified report is degraded.
 func (p *Plugins) Describe(spec Spec, f File, build string) discovery.Document {
-	d := discovery.Document{Engine: spec.Engine, Build: build, Mode: f.Mode, Adapters: []discovery.Row{}}
+	d := discovery.Document{Engine: spec.Engine, Build: build, Mode: f.Mode, Acknowledge: slices.Clone(f.Acknowledge), Adapters: []discovery.Row{}}
 	for _, name := range slices.Sorted(maps.Keys(f.Ports)) {
 		for _, s := range f.Ports[name].Use {
 			u, err := ParseUse(s)
@@ -81,7 +84,7 @@ func (p *Plugins) Describe(spec Spec, f File, build string) discovery.Document {
 			}
 			if c, ok := p.clients[u.Name]; ok && u.Tier == TierPlugin {
 				pin, st := c.Pin(), c.Status()
-				row.Version, row.Protocol, row.ManifestDigest = pin.Version, pin.Protocol, pin.Digest
+				row.Version, row.Protocol, row.ManifestDigest = pin.Version, c.Protocol(name), pin.Digest
 				row.Capabilities, row.Status = c.Capabilities(name), st.State
 				row.Conformance, row.Plaintext = p.conformance[u.Name], c.Config().Plaintext()
 				if st.State == host.StateServing && (row.Conformance == nil || !row.Conformance.Passed) {

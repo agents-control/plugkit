@@ -17,10 +17,12 @@ const Path = "/v1/adapters"
 
 // Document lists the adapters bound at boot.
 type Document struct {
-	Engine   string `json:"engine"`
-	Build    string `json:"build,omitempty"`
-	Mode     string `json:"mode,omitempty"`
-	Adapters []Row  `json:"adapters"`
+	Engine string `json:"engine"`
+	Build  string `json:"build,omitempty"`
+	Mode   string `json:"mode,omitempty"`
+	// Acknowledge lists the opt-ins the running engine was started with.
+	Acknowledge []string `json:"acknowledge,omitempty"`
+	Adapters    []Row    `json:"adapters"`
 }
 
 // Row is one adapter serving one port; a multi-valued port has one row per provider.

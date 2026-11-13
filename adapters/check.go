@@ -51,6 +51,8 @@ func (fs Findings) Warnings() []string {
 	return out
 }
 
+var credentialURL = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:[^/\s@]+@`)
+
 var secretKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|credential|apikey|api_key|private)`)
 
 // Check validates a loaded desired state offline: header, every selection against the spec, plugin wiring,
@@ -217,6 +219,9 @@ func literalSecrets(path string, cfg map[string]any) []string {
 		case map[string]any:
 			out = append(out, literalSecrets(key, v)...)
 		case string:
+			if credentialURL.MatchString(v) {
+				out = append(out, fmt.Sprintf("config %s embeds credentials in a URL; use a Ref key with a reference", key))
+			}
 			isRef := strings.HasSuffix(k, "Ref")
 			if isRef && !host.IsRef(v) {
 				out = append(out, fmt.Sprintf("config %s must be a reference such as env:NAME", key))

@@ -7,6 +7,8 @@
 3. `Health` must answer `STATUS_SERVING`.
 4. The host pins `sha256` of the deterministic manifest encoding. A later different digest marks the plugin `degraded`.
 
+A plugin must filter its ports by `host_protocols`: a port lists the ids it speaks in `protocols`, the host enables it under the first of its own protocols (in its preference order) that the port offers and reports that id per port. A manifest with no port speaking a host protocol, or declaring a port name twice, is refused. `port_config` holds references only, never secret values: `Check` refuses secret-looking keys and URLs with embedded credentials, and a port config that is not an object is refused.
+
 Capabilities are `name` or `name=value`. The host keeps those whose name its build supports for that port.
 
 ## Errors

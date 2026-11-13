@@ -3,6 +3,8 @@ package conform_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -148,5 +150,17 @@ func TestCLIPrintsSkipWithReason(t *testing.T) {
 	var out, errb strings.Builder
 	if code := cli.Main([]string{"-endpoint", cfg.Endpoint, "-insecure", "-timeout", "20s"}, &out, &errb); code != 0 || !strings.Contains(out.String(), "SKIP sink/needs x") || !strings.Contains(out.String(), "needs feature x") {
 		t.Fatalf("code=%d out=%s err=%s", code, out.String(), errb.String())
+	}
+}
+
+func TestOnlyASoleSkipIsASkip(t *testing.T) {
+	cfg := refConfig(t)
+	wrapped := func(context.Context) error { return fmt.Errorf("setup: %w", conform.Skip("x")) }
+	joined := func(context.Context) error { return errors.Join(errors.New("real failure"), conform.Skip("x")) }
+	r := conform.Run(t.Context(), &host.Host{}, cfg, caseSuite(
+		conform.Case{Name: "wrapped", Optional: true, Run: wrapped},
+		conform.Case{Name: "joined", Optional: true, Run: joined}))
+	if r.Passed || !slices.Equal(r.Failed(), []string{"wrapped", "joined"}) || len(r.Skipped()) != 0 {
+		t.Fatalf("failed=%v skipped=%v", r.Failed(), r.Skipped())
 	}
 }

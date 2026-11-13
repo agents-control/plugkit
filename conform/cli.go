@@ -21,14 +21,15 @@ type CLI struct {
 	Corpus func() ([]Fixture, func(), error)
 }
 
-// Main runs "conform [flags]" against one endpoint, or "conform corpus"; it returns 0 on pass, 1 on failure, 2 on misuse.
+// Main runs "conform [flags]" against one endpoint, or "conform corpus [-timeout d]"; it returns 0 on pass, 1 on failure, 2 on misuse.
 func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 	h := cli.Host
 	if h.Secrets == nil {
 		h.Secrets = host.EnvSecrets{}
 	}
-	if len(args) > 0 && args[0] == "corpus" {
-		return cli.corpus(&h, stdout, stderr)
+	corpus := len(args) > 0 && args[0] == "corpus"
+	if corpus {
+		args = args[1:]
 	}
 	fs := flag.NewFlagSet("conform", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -68,6 +69,9 @@ func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if corpus {
+		return cli.corpus(ctx, &h, stdout, stderr)
+	}
 	r := Run(ctx, &h, cfg, cli.Suites...)
 	for _, c := range r.Cases {
 		verdict, name, detail := "PASS", c.Case, c.Error
@@ -96,7 +100,7 @@ func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func (cli CLI) corpus(h *host.Host, stdout, stderr io.Writer) int {
+func (cli CLI) corpus(ctx context.Context, h *host.Host, stdout, stderr io.Writer) int {
 	if cli.Corpus == nil {
 		fmt.Fprintln(stderr, "this binary ships no corpus")
 		return 2
@@ -107,7 +111,7 @@ func (cli CLI) corpus(h *host.Host, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer stop()
-	if err := Verify(context.Background(), h, fixtures, cli.Suites...); err != nil {
+	if err := Verify(ctx, h, fixtures, cli.Suites...); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
