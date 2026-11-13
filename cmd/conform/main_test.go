@@ -72,3 +72,17 @@ func TestCorpusCommand(t *testing.T) {
 		t.Fatalf("an invalid config is a failing handshake, got %d", code)
 	}
 }
+
+func TestCorpusHonoursTimeout(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := cli.Main([]string{"corpus", "-timeout", "1ns"}, &out, &errOut); code != 1 {
+		t.Fatalf("an expired deadline must fail the corpus, got %d: %s", code, errOut.String())
+	}
+}
+
+func TestCorpusRejectsEndpointFlags(t *testing.T) {
+	var out, errOut bytes.Buffer
+	if code := cli.Main([]string{"corpus", "-endpoint", "x:1"}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "-endpoint") {
+		t.Fatalf("code = %d: %s", code, errOut.String())
+	}
+}

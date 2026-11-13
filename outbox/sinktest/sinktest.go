@@ -19,7 +19,7 @@ const Version = "sinktest@1"
 
 // Suite returns the sink suite for the conform runner.
 func Suite() conform.Suite {
-	return conform.Suite{Port: "sink", Version: Version, Cases: func(cc grpc.ClientConnInterface) []conform.Case {
+	return conform.Suite{Port: "sink", Version: Version, Cases: func(_ context.Context, cc grpc.ClientConnInterface) []conform.Case {
 		return Cases(outbox.PluginSink(cc))
 	}}
 }

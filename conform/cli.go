@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/agents-control/plugkit/host"
 )
@@ -19,19 +21,21 @@ type CLI struct {
 	Corpus func() ([]Fixture, func(), error)
 }
 
-// Main runs "conform [flags]" against one endpoint, or "conform corpus"; it returns 0 on pass, 1 on failure, 2 on misuse.
+// Main runs "conform [flags]" against one endpoint, or "conform corpus [-timeout d]"; it returns 0 on pass, 1 on failure, 2 on misuse.
 func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 	h := cli.Host
 	if h.Secrets == nil {
 		h.Secrets = host.EnvSecrets{}
 	}
-	if len(args) > 0 && args[0] == "corpus" {
-		return cli.corpus(&h, stdout, stderr)
+	corpus := len(args) > 0 && args[0] == "corpus"
+	if corpus {
+		args = args[1:]
 	}
 	fs := flag.NewFlagSet("conform", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var cfg host.Config
 	var ports, report, settings string
+	var timeout time.Duration
 	fs.StringVar(&cfg.Endpoint, "endpoint", "", "plugin endpoint: host:port for grpc, http(s)://host:port for http")
 	fs.StringVar(&cfg.Protocol, "protocol", host.ProtocolGRPC, "grpc or http")
 	fs.StringVar(&cfg.Name, "name", "under-test", "name used in errors")
@@ -43,6 +47,7 @@ func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&cfg.CredentialRef, "credential", "", "bearer token reference: env:NAME or file:/path")
 	fs.StringVar(&ports, "ports", "", "comma-separated ports to check; empty checks every declared port")
 	fs.StringVar(&settings, "config", "", "JSON file mapping each port to its config")
+	fs.DurationVar(&timeout, "timeout", 5*time.Minute, "deadline of the whole run, interrupt cancels it earlier")
 	fs.StringVar(&report, "report", "", "write the JSON report to this path")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -60,16 +65,38 @@ func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
-	r := Run(context.Background(), &h, cfg, cli.Suites...)
+	if corpus {
+		extra := ""
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name != "timeout" {
+				extra = f.Name
+			}
+		})
+		if extra != "" {
+			fmt.Fprintf(stderr, "corpus takes only -timeout, not -%s\n", extra)
+			return 2
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if corpus {
+		return cli.corpus(ctx, &h, stdout, stderr)
+	}
+	r := Run(ctx, &h, cfg, cli.Suites...)
 	for _, c := range r.Cases {
-		verdict, name := "PASS", c.Case
-		if !c.Passed {
+		verdict, name, detail := "PASS", c.Case, c.Error
+		switch {
+		case c.Skipped:
+			verdict, detail = "SKIP", c.Reason
+		case !c.Passed:
 			verdict = "FAIL"
 		}
 		if c.Port != "" {
 			name = c.Port + "/" + c.Case
 		}
-		fmt.Fprintf(stdout, "%s %s (%.1f ms) %s\n", verdict, name, c.Millis, c.Error)
+		fmt.Fprintf(stdout, "%s %s (%.1f ms) %s\n", verdict, name, c.Millis, detail)
 	}
 	fmt.Fprintf(stdout, "report %s passed=%t\n", r.Digest(), r.Passed)
 	if report != "" {
@@ -85,7 +112,7 @@ func (cli CLI) Main(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func (cli CLI) corpus(h *host.Host, stdout, stderr io.Writer) int {
+func (cli CLI) corpus(ctx context.Context, h *host.Host, stdout, stderr io.Writer) int {
 	if cli.Corpus == nil {
 		fmt.Fprintln(stderr, "this binary ships no corpus")
 		return 2
@@ -96,7 +123,7 @@ func (cli CLI) corpus(h *host.Host, stdout, stderr io.Writer) int {
 		return 2
 	}
 	defer stop()
-	if err := Verify(context.Background(), h, fixtures, cli.Suites...); err != nil {
+	if err := Verify(ctx, h, fixtures, cli.Suites...); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

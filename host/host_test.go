@@ -104,7 +104,7 @@ func TestHandshakeRefusals(t *testing.T) {
 		"version constraint":   {cfg: func(c *host.Config) { c.Require.Version = ">=2.0.0" }, want: "does not satisfy"},
 		"missing capability":   {cfg: func(c *host.Config) { c.Require.Capabilities = []string{"sink.ordered"} }, want: "required capability"},
 		"capability narrowed":  {h: host.Host{Supported: map[string][]string{"sink": {"other"}}}, cfg: func(c *host.Config) { c.Require.Capabilities = []string{"batch"} }, want: "required capability"},
-		"config schema":        {cfg: func(c *host.Config) { c.Settings = map[string]any{"sink": "not an object"} }, want: "config_schema"},
+		"config schema":        {cfg: func(c *host.Config) { c.Settings = map[string]any{"sink": "not an object"} }, want: "must be an object"},
 		"credential no secret": {cfg: func(c *host.Config) { c.CredentialRef = "env:X" }, want: "secret resolver"},
 	}
 	for name, tc := range cases {
@@ -539,5 +539,77 @@ func TestStreamsNeverConsumeUnarySlots(t *testing.T) {
 	}
 	if err := cc.Invoke(t.Context(), "/test.v1.Watch/Ping", &acplugv1.HealthRequest{}, &acplugv1.HealthResponse{}); err != nil {
 		t.Fatalf("unary call while streams are open: %v", err)
+	}
+}
+
+func TestHandshakeDeliversPortConfig(t *testing.T) {
+	p := &recordingPlugin{Plugin: serve.NewPlugin(serve.SinkManifest("ref"))}
+	cfg := plain(start(t, p, &serve.MemorySink{}))
+	cfg.Settings = map[string]any{"sink": map[string]any{"stage": "a", "n": 2}, "other": map[string]any{"x": 1}}
+	cfg.Ports = []string{"sink"}
+	dial(t, &host.Host{}, cfg)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	got := p.last.GetPortConfig()
+	if len(got) != 1 || got["sink"].AsMap()["stage"] != "a" || got["sink"].AsMap()["n"] != float64(2) {
+		t.Fatalf("port_config = %v", got)
+	}
+}
+
+func TestPortProtocolsGateEnablement(t *testing.T) {
+	m := serve.Manifest(host.ProtocolID, "multi", "1.0.0", serve.Port("sink", "batch"), serve.Port("second"))
+	m.Ports[0].Protocols = []string{"acplug/1+other/1", "acplug/1+mtplugin/1"}
+	addr := start(t, serve.NewPlugin(m), &serve.MemorySink{})
+	if c := dial(t, &host.Host{}, plain(addr)); len(c.Ports()) != 1 || c.Ports()[0] != "second" {
+		t.Fatalf("ports without the protocol = %v", c.Ports())
+	}
+	cfg := plain(addr)
+	cfg.Ports = []string{"sink"}
+	if _, err := (&host.Host{}).Dial(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "not provided") {
+		t.Fatalf("configured port with a foreign protocol: %v", err)
+	}
+	for _, id := range []string{"acplug/1+other/1", "acplug/1+mtplugin/1"} {
+		if c := dial(t, &host.Host{Protocols: []string{host.ProtocolID, id}}, plain(addr)); len(c.Ports()) != 2 {
+			t.Fatalf("host speaking %s enables %v", id, c.Ports())
+		}
+	}
+}
+
+func TestServeManifestBuildsPorts(t *testing.T) {
+	m := serve.Manifest("acplug/1+x/1", "n", "2.0.0", serve.Port("a", "c1"), serve.Port("b"))
+	if m.GetProtocol() != "acplug/1+x/1" || m.GetVersion() != "2.0.0" || len(m.GetPorts()) != 2 || m.GetPorts()[0].GetCapabilities()[0] != "c1" || m.GetPorts()[1].GetConfigSchema() == nil {
+		t.Fatalf("manifest = %v", m)
+	}
+}
+
+func TestNegotiatedProtocolPerPort(t *testing.T) {
+	m := serve.Manifest(host.ProtocolID, "multi", "1.0.0", serve.Port("sink"), serve.Port("plain"))
+	m.Ports[0].Protocols = []string{"acplug/1+b/1", "acplug/1+a/1", "acplug/1+legacy/1"}
+	c := dial(t, &host.Host{Protocols: []string{host.ProtocolID, "acplug/1+a/1", "acplug/1+b/1"}}, plain(start(t, serve.NewPlugin(m), &serve.MemorySink{})))
+	if c.Protocol("sink") != "acplug/1+a/1" || c.Protocol("plain") != host.ProtocolID || c.Protocol("missing") != "" {
+		t.Fatalf("protocols = %q %q", c.Protocol("sink"), c.Protocol("plain"))
+	}
+}
+
+func TestLegacyProtocolIdIsNotAPerPortProtocol(t *testing.T) {
+	m := serve.Manifest(host.ProtocolID, "multi", "1.0.0", serve.Port("sink"))
+	m.Ports[0].Protocols = []string{"acplug/1+old/1"}
+	h := &host.Host{Legacy: []host.Legacy{{Protocol: "acplug/1+old/1", Service: "old.v1.Plugin"}}}
+	if _, err := h.Dial(t.Context(), plain(start(t, serve.NewPlugin(m), &serve.MemorySink{}))); err == nil || !strings.Contains(err.Error(), "no port speaks") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestHandshakeRefusesNoSpeakingPortAndDuplicates(t *testing.T) {
+	foreign := serve.Manifest(host.ProtocolID, "p", "1.0.0", serve.Port("sink"))
+	foreign.Ports[0].Protocols = []string{"acplug/1+other/1"}
+	dup := serve.Manifest(host.ProtocolID, "p", "1.0.0", serve.Port("sink"), serve.Port("sink"))
+	for name, tc := range map[string]struct {
+		m    *acplugv1.ManifestResponse
+		want string
+	}{"no port speaks": {foreign, "no port speaks"}, "duplicate port": {dup, "twice"}} {
+		if _, err := (&host.Host{}).Dial(t.Context(), plain(start(t, serve.NewPlugin(tc.m), &serve.MemorySink{}))); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v", name, err)
+		}
 	}
 }

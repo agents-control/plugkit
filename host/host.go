@@ -106,20 +106,21 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 	if err != nil {
 		return err
 	}
-	if err := h.accept(m, c.cfg); err != nil {
+	if err := h.accept(m, c.cfg, c.legacy); err != nil {
 		return err
 	}
 	c.manifest = m
 	c.pin = Pin{Name: m.GetName(), Version: m.GetVersion(), Protocol: m.GetProtocol(), Digest: Digest(m)}
 	c.ports = map[string]*enabledPort{}
 	for _, p := range m.GetPorts() {
-		if len(c.cfg.Ports) > 0 && !slices.Contains(c.cfg.Ports, p.GetPort()) {
+		protocol, ok := h.negotiate(p, m.GetProtocol(), c.legacy)
+		if !ok || !c.cfg.allows(p.GetPort()) {
 			continue
 		}
 		if err := validateSettings(p, c.cfg.Settings[p.GetPort()]); err != nil {
 			return err
 		}
-		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p), metadata: p.GetMetadata()}
+		c.ports[p.GetPort()] = &enabledPort{conn: h.guard(c.conn, p), capabilities: h.narrow(p), metadata: p.GetMetadata(), protocol: protocol}
 	}
 	if err := h.requireCapabilities(c); err != nil {
 		return err
@@ -132,7 +133,11 @@ func (h *Host) handshake(ctx context.Context, c *Client) error {
 }
 
 func (h *Host) manifest(ctx context.Context, c *Client) (*acplugv1.ManifestResponse, error) {
-	c.request = &acplugv1.ManifestRequest{HostProtocols: h.protocols(), HostEngine: h.Engine, HostVersion: h.Version}
+	portConfig, err := portConfig(c.cfg)
+	if err != nil {
+		return nil, err
+	}
+	c.request = &acplugv1.ManifestRequest{HostProtocols: h.protocols(), HostEngine: h.Engine, HostVersion: h.Version, PortConfig: portConfig}
 	m, err := acplugv1.NewPluginClient(c.conn).Manifest(ctx, c.request)
 	if status.Code(err) != codes.Unimplemented {
 		if err != nil {
@@ -157,11 +162,33 @@ func (h *Host) manifest(ctx context.Context, c *Client) (*acplugv1.ManifestRespo
 	return nil, fmt.Errorf("manifest: %w", err)
 }
 
-func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
-	accepted := h.protocols()
+func (h *Host) accepted() []string {
+	out := h.protocols()
 	for _, l := range h.Legacy {
-		accepted = append(accepted, l.Protocol)
+		out = append(out, l.Protocol)
 	}
+	return out
+}
+
+func (h *Host) negotiate(p *acplugv1.ProvidedPort, manifestProtocol string, legacy bool) (string, bool) {
+	offered := p.GetProtocols()
+	if len(offered) == 0 {
+		offered = []string{manifestProtocol}
+	}
+	prefs := h.protocols()
+	if legacy {
+		prefs = append(prefs, manifestProtocol)
+	}
+	for _, id := range prefs {
+		if slices.Contains(offered, id) {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config, legacy bool) error {
+	accepted := h.accepted()
 	if !slices.Contains(accepted, m.GetProtocol()) {
 		return fmt.Errorf("plugin speaks %q, host speaks %s", m.GetProtocol(), strings.Join(accepted, ", "))
 	}
@@ -178,7 +205,7 @@ func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
 	if len(m.GetPorts()) == 0 {
 		return errors.New("manifest declares no ports")
 	}
-	declared := map[string]bool{}
+	declared, speaking := map[string]bool{}, false
 	for _, p := range m.GetPorts() {
 		if p.GetPort() == "" {
 			return errors.New("manifest declares a port without a name")
@@ -186,7 +213,14 @@ func (h *Host) accept(m *acplugv1.ManifestResponse, cfg Config) error {
 		if !isSchema(p.GetConfigSchema()) {
 			return fmt.Errorf("port %q declares no config_schema (a JSON Schema object or boolean)", p.GetPort())
 		}
-		declared[p.GetPort()] = true
+		if _, dup := declared[p.GetPort()]; dup {
+			return fmt.Errorf("manifest declares port %q twice", p.GetPort())
+		}
+		_, speaks := h.negotiate(p, m.GetProtocol(), legacy)
+		declared[p.GetPort()], speaking = speaks, speaking || speaks
+	}
+	if !speaking {
+		return fmt.Errorf("no port speaks a host protocol (%s); the plugin must filter its ports by host_protocols", strings.Join(h.protocols(), ", "))
 	}
 	for _, want := range cfg.Ports {
 		if !declared[want] {
@@ -314,13 +348,40 @@ func isSchema(v *structpb.Value) bool {
 	return false
 }
 
-func validateSettings(p *acplugv1.ProvidedPort, settings any) error {
+func settingsJSON(port string, settings any) ([]byte, error) {
 	if settings == nil {
 		settings = map[string]any{}
 	}
 	raw, err := json.Marshal(settings)
 	if err != nil {
-		return fmt.Errorf("port %q config: %w", p.GetPort(), err)
+		return nil, fmt.Errorf("port %q config: %w", port, err)
+	}
+	return raw, nil
+}
+
+func portConfig(cfg Config) (map[string]*structpb.Struct, error) {
+	out := map[string]*structpb.Struct{}
+	for port, settings := range cfg.Settings {
+		if !cfg.allows(port) {
+			continue
+		}
+		raw, err := settingsJSON(port, settings)
+		if err != nil {
+			return nil, err
+		}
+		st := &structpb.Struct{}
+		if err := st.UnmarshalJSON(raw); err != nil {
+			return nil, fmt.Errorf("port %q config must be an object: %w", port, err)
+		}
+		out[port] = st
+	}
+	return out, nil
+}
+
+func validateSettings(p *acplugv1.ProvidedPort, settings any) error {
+	raw, err := settingsJSON(p.GetPort(), settings)
+	if err != nil {
+		return err
 	}
 	if err := validateJSON(p.GetConfigSchema(), raw); err != nil {
 		return fmt.Errorf("port %q config does not match the plugin's config_schema: %w", p.GetPort(), err)

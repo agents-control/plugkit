@@ -38,6 +38,7 @@ type enabledPort struct {
 	conn         *portConn
 	capabilities []string
 	metadata     map[string]string
+	protocol     string
 }
 
 // Client is a dialed, negotiated and pinned plugin; Port hands out guarded connections for engine adapters.
@@ -88,6 +89,14 @@ func (c *Client) Capabilities(name string) []string {
 		return slices.Clone(p.capabilities)
 	}
 	return nil
+}
+
+// Protocol returns the protocol id negotiated for an enabled port: the host's most preferred one the port speaks.
+func (c *Client) Protocol(name string) string {
+	if p, ok := c.ports[name]; ok {
+		return p.protocol
+	}
+	return ""
 }
 
 // Metadata returns a copy of the descriptive metadata an enabled port declares, nil when the port is not enabled.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -54,7 +55,7 @@ func (fs Findings) Warnings() []string {
 var secretKey = regexp.MustCompile(`(?i)(secret|token|password|passwd|credential|apikey|api_key|private)`)
 
 // Check validates a loaded desired state offline: header, every selection against the spec, plugin wiring,
-// the production guard, conformance requirements and literal secrets in config.
+// the production guard, conformance requirements, literal secrets in config and the engine's own Spec.Validate rules.
 func Check(spec Spec, f File) Findings {
 	var fs Findings
 	add := func(level, where, format string, args ...any) {
@@ -70,6 +71,11 @@ func Check(spec Spec, f File) Findings {
 		add(LevelError, "mode", "mode must be production or dev, got %q", f.Mode)
 	}
 	prod := f.Mode == ModeProduction
+	for _, a := range f.Acknowledge {
+		if !slices.Contains(spec.Acknowledgements, a) {
+			add(LevelError, "acknowledge", "unknown acknowledgement %q; %s accepts %s", a, spec.Engine, strings.Join(spec.Acknowledgements, ", "))
+		}
+	}
 	plugins := map[string]host.Config{}
 	for _, p := range f.Plugins {
 		where := "plugin " + p.Name
@@ -159,6 +165,9 @@ func Check(spec Spec, f File) Findings {
 			}
 		}
 	}
+	if spec.Validate != nil {
+		fs = append(fs, spec.Validate(f)...)
+	}
 	return fs
 }
 
@@ -209,6 +218,9 @@ func literalSecrets(path string, cfg map[string]any) []string {
 		case map[string]any:
 			out = append(out, literalSecrets(key, v)...)
 		case string:
+			if embedsCredentials(v) {
+				out = append(out, fmt.Sprintf("config %s embeds credentials in a URL; use a Ref key with a reference", key))
+			}
 			isRef := strings.HasSuffix(k, "Ref")
 			if isRef && !host.IsRef(v) {
 				out = append(out, fmt.Sprintf("config %s must be a reference such as env:NAME", key))
@@ -219,4 +231,20 @@ func literalSecrets(path string, cfg map[string]any) []string {
 		}
 	}
 	return out
+}
+
+func embedsCredentials(v string) bool {
+	u, err := url.Parse(v)
+	if err != nil || (u.Host == "" && u.User == nil) {
+		return false
+	}
+	if u.User != nil {
+		return true
+	}
+	for k := range u.Query() {
+		if secretKey.MatchString(k) {
+			return true
+		}
+	}
+	return false
 }

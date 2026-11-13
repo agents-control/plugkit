@@ -62,13 +62,22 @@ func (p *Plugin) Health(context.Context, *acplugv1.HealthRequest) (*acplugv1.Hea
 	return &acplugv1.HealthResponse{Status: p.health}, nil
 }
 
+// Manifest is the manifest of a plugin speaking protocol (for example host.ProtocolID+"+wfplugin/1") that serves ports.
+func Manifest(protocol, name, version string, ports ...*acplugv1.ProvidedPort) *acplugv1.ManifestResponse {
+	return &acplugv1.ManifestResponse{
+		Protocol: protocol, ProtocolVersion: &acplugv1.VersionRange{Min: 1, Max: 1}, Name: name, Version: version, Ports: ports,
+	}
+}
+
+// Port declares a port with an object config schema and the given capabilities.
+func Port(name string, capabilities ...string) *acplugv1.ProvidedPort {
+	schema, _ := structpb.NewValue(map[string]any{"type": "object"})
+	return &acplugv1.ProvidedPort{Port: name, ConfigSchema: schema, Capabilities: capabilities}
+}
+
 // SinkManifest is the manifest of a plugin that serves only the sink port with an object config schema.
 func SinkManifest(name string) *acplugv1.ManifestResponse {
-	schema, _ := structpb.NewValue(map[string]any{"type": "object"})
-	return &acplugv1.ManifestResponse{
-		Protocol: host.ProtocolID, ProtocolVersion: &acplugv1.VersionRange{Min: 1, Max: 1}, Name: name, Version: "1.0.0",
-		Ports: []*acplugv1.ProvidedPort{{Port: "sink", ConfigSchema: schema, Capabilities: []string{"batch"}}},
-	}
+	return Manifest(host.ProtocolID, name, "1.0.0", Port("sink", "batch"))
 }
 
 // MemorySink is the reference EventSink: it keeps every event once, by id, in arrival order.

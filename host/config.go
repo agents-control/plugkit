@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -76,6 +77,8 @@ func (c *Config) Validate() error {
 	}
 	return nil
 }
+
+func (c Config) allows(port string) bool { return len(c.Ports) == 0 || slices.Contains(c.Ports, port) }
 
 // Plaintext reports whether traffic leaves the machine unencrypted: insecure TLS on an endpoint that is not loopback or a Unix socket.
 func (c Config) Plaintext() bool {

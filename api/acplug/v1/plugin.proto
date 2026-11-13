@@ -30,6 +30,8 @@ message ManifestRequest {
   // Engine name of the host, for example "workflow-engine".
   string host_engine = 2;
   string host_version = 3;
+  // Config of each enabled port from the adapters file, keyed by port name; the host validates it against config_schema after the reply.
+  map<string, google.protobuf.Struct> port_config = 4;
 }
 
 // VersionRange is the inclusive range of acplug wire versions a plugin implements.
@@ -59,6 +61,8 @@ message ProvidedPort {
   Limits limits = 5;
   // Descriptive metadata of the port, such as "media_type" or "description"; never interpreted as a capability.
   map<string, string> metadata = 6;
+  // Protocol ids this port speaks; empty means the manifest protocol. The host enables the port only if it speaks one of them.
+  repeated string protocols = 7;
 }
 
 // Limits are the plugin's own ceilings; the host applies the smaller of its value and the plugin's.

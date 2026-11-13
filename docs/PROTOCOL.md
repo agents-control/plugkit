@@ -2,10 +2,12 @@
 
 ## Handshake
 
-1. The host dials (TLS by default; plaintext only with `tls.insecure: true`) and calls `acplug.v1.Plugin/Manifest` with `host_protocols`, `host_engine`, `host_version`, within 10 s.
-2. The host refuses the plugin when: `protocol` is not one of `host_protocols` (or an accepted legacy protocol); `name` or `version` is empty; `protocol_version` is not a valid range containing 1; no port is declared; a port has no name or no `config_schema` (a JSON Schema object, or `true`); a configured port is not declared; `require.version` (semver terms such as `>=0.3.0 <1.0.0`) does not hold; a `require.capabilities` entry is missing after narrowing; a port's config does not validate against its schema.
+1. The host dials (TLS by default; plaintext only with `tls.insecure: true`) and calls `acplug.v1.Plugin/Manifest` with `host_protocols`, `host_engine`, `host_version` and `port_config` (the adapters-file config of each enabled port, object configs only; the plugin reads its settings here, not from side env vars), within 10 s.
+2. The host refuses the plugin when: `protocol` is not one of `host_protocols` (or an accepted legacy protocol); `name` or `version` is empty; `protocol_version` is not a valid range containing 1; no port is declared; a port has no name or no `config_schema` (a JSON Schema object, or `true`); a configured port is not declared or speaks none of the host's protocols (`ProvidedPort.protocols`, empty means the manifest protocol; such a port is simply not enabled when the configuration does not name it); `require.version` (semver terms such as `>=0.3.0 <1.0.0`) does not hold; a `require.capabilities` entry is missing after narrowing; a port's config does not validate against its schema.
 3. `Health` must answer `STATUS_SERVING`.
 4. The host pins `sha256` of the deterministic manifest encoding. A later different digest marks the plugin `degraded`.
+
+A plugin must filter its ports by `host_protocols`: a port lists the ids it speaks in `protocols`, the host enables it under the first of its own protocols (in its preference order) that the port offers and reports that id per port. A manifest with no port speaking a host protocol, or declaring a port name twice, is refused. `port_config` holds references only, never secret values: `Check` refuses secret-looking keys and URLs with embedded credentials, and a port config that is not an object is refused.
 
 Capabilities are `name` or `name=value`. The host keeps those whose name its build supports for that port.
 
